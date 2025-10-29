@@ -1,0 +1,137 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ORGANIZER
+  VENDOR
+  ADMIN
+}
+
+enum TicketStatus {
+  VALID
+  USED
+  CANCELLED
+}
+
+enum PurchaseType {
+  ONLINE
+  GATE
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  email        String    @unique
+  password     String
+  firstName    String
+  lastName     String
+  phone        String?
+  role         UserRole  @default(USER)
+  isVerified   Boolean   @default(false)
+  avatar       String?
+  // Organizer-specific fields
+  isOrganizerVerified Boolean @default(false)  // Whether the user's organizer status is verified
+  organizerBusinessName String?  // Business name if user is an organizer
+  organizerDescription String?   // Description of organizer's business
+  organizerContactInfo String?   // Additional contact info for organizer
+  
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  
+  // Relations
+  events       Event[]
+  tickets      Ticket[]
+  vendors      Vendor[]
+}
+
+model Event {
+  id               Int        @id @default(autoincrement())
+  title            String
+  description      String
+  startDate        DateTime
+  endDate          DateTime
+  location         String
+  organizerId      Int        // Foreign key to User (organizer)
+  price            Float?
+  capacity         Int?
+  imageUrl         String?
+  isPublished      Boolean    @default(false)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  
+  // Ticket types
+  ticketTypes      TicketType[]
+  
+  // Vendors
+  allowVendors     Boolean    @default(false)
+  stallType        String?    // e.g., "Food, Drinks, Merchandise"
+  stallFee         Float?     // null means free
+  maxVendors       Int?       
+  vendorDeadline   DateTime?
+  gateTicketing    Boolean    @default(false)  // Allow gate ticketing
+  vendors          Vendor[]
+  
+  // Relations
+  organizer        User       @relation(fields: [organizerId], references: [id])
+  tickets          Ticket[]
+}
+
+model TicketType {
+  id          Int      @id @default(autoincrement())
+  name        String   // e.g. "General", "VIP", "Early Bird"
+  price       Float
+  quantity    Int?
+  eventId     Int      // Foreign key to Event
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  event       Event    @relation(fields: [eventId], references: [id])
+  tickets     Ticket[]
+}
+
+model Ticket {
+  id             Int          @id @default(autoincrement())
+  eventId        Int
+  userId         Int?
+  ticketTypeId   Int          // Foreign key to TicketType
+  qrCode         String       // Unique QR code for the ticket
+  status         TicketStatus @default(VALID)
+  purchaseType   PurchaseType @default(ONLINE)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  
+  // Relations
+  event          Event        @relation(fields: [eventId], references: [id])
+  user           User?        @relation(fields: [userId], references: [id])
+  ticketType     TicketType   @relation(fields: [ticketTypeId], references: [id])
+}
+
+model Vendor {
+  id             Int       @id @default(autoincrement())
+  userId         Int       // The user who registered as a vendor
+  eventId        Int
+  name           String    // Contact person name
+  businessName   String
+  description    String?
+  contactEmail   String
+  contactPhone   String?
+  isApproved     Boolean   @default(false)
+  isPaid         Boolean   @default(false)
+  paymentAmount  Float?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  user           User      @relation(fields: [userId], references: [id])
+  event          Event     @relation(fields: [eventId], references: [id])
+}
