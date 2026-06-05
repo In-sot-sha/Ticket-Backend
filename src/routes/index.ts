@@ -3,7 +3,10 @@ import userRoutes from './user'
 import eventRoutes from './event'
 import ticketRoutes from './ticket'
 import vendorRoutes from './vendor'
+import vendorTypeRoutes from './vendorType'
 import userRoleRoutes from './userRole'
+import organizationRoutes from './organization'
+import organizationMemberRoutes from './organizationMember'
 
 const router: Router = express.Router()
 
@@ -11,7 +14,10 @@ router.use("/users", userRoutes);
 router.use("/events", eventRoutes);
 router.use("/tickets", ticketRoutes);
 router.use("/vendors", vendorRoutes);
+router.use("/vendor-types", vendorTypeRoutes);
 router.use("/user-roles", userRoleRoutes);
+router.use("/organizations", organizationRoutes);
+router.use("/org-members", organizationMemberRoutes);
 
 
 export default router

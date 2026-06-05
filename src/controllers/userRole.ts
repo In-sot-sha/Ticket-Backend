@@ -7,32 +7,54 @@ export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
   try {
     const { businessName, description, contactInfo } = req.body;
 
-    // Update user to set organizer-related fields
+    // Check if user already has organizations
+    const existingOrgs = await prisma.organization.count({
+      where: { ownerId: req.userId! }
+    });
+
+    if (existingOrgs > 0) {
+      return res.status(400).json({ message: 'You already have organizations' });
+    }
+
+    // Create organization for the user
+    const organization = await prisma.organization.create({
+      data: {
+        name: businessName,
+        description: description,
+        website: contactInfo,
+        ownerId: req.userId!,
+        isVerified: false // Set to false initially, requires admin verification
+      }
+    });
+
+    // Add user as owner member
+    await prisma.organizationMember.create({
+      data: {
+        userId: req.userId!,
+        organizationId: organization.id,
+        role: 'admin'
+      }
+    });
+
+    // Update user role
     const user = await prisma.user.update({
       where: { id: Number(req.userId) },
       data: {
-        role: 'ORGANIZER',
-        isOrganizerVerified: false, // Set to false initially, requires admin verification
-        organizerBusinessName: businessName,
-        organizerDescription: description,
-        organizerContactInfo: contactInfo,
+        role: 'ORGANIZER'
       },
       select: {
         id: true,
         email: true,
         firstName: true,
         lastName: true,
-        role: true,
-        isOrganizerVerified: true,
-        organizerBusinessName: true,
-        organizerDescription: true,
-        organizerContactInfo: true,
+        role: true
       }
     });
 
     return res.status(200).json({
-      message: 'Successfully requested organizer status',
-      user
+      message: 'Successfully became an organizer',
+      user,
+      organization
     });
   } catch (error) {
     console.error(error);
@@ -40,7 +62,7 @@ export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Request to become a vendor (this is different from applying to a specific event)
+// Request to become a vendor (this creates a vendor profile, different from applying to events)
 export const becomeVendor = async (req: AuthRequest, res: Response) => {
   try {
     // In this case, becoming a vendor just means updating the user's role
@@ -69,66 +91,72 @@ export const becomeVendor = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Get organizer profile
+// Get organizer profile (organization details)
 export const getOrganizerProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: Number(req.userId) },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        role: true,
-        isOrganizerVerified: true,
-        organizerBusinessName: true,
-        organizerDescription: true,
-        organizerContactInfo: true,
+    const organizations = await prisma.organization.findMany({
+      where: {
+        OR: [
+          { ownerId: req.userId! },
+          { members: {
+              some: {
+                userId: req.userId!
+              }
+            }
+          }
+        ]
+      },
+      include: {
+        _count: {
+          select: {
+            members: true,
+            events: true
+          }
+        }
       }
     });
 
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+    if (organizations.length === 0) {
+      return res.status(404).json({ message: 'No organizations found for this user' });
     }
 
-    return res.json(user);
+    return res.json(organizations);
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
   }
 };
 
-// Update organizer profile
+// Update organizer profile (organization details)
 export const updateOrganizerProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const { businessName, description, contactInfo, phone } = req.body;
+    const { organizationId, businessName, description, contactInfo, } = req.body;
 
-    const user = await prisma.user.update({
-      where: { id: Number(req.userId) },
+    // Check if user owns this organization
+    const organization = await prisma.organization.findFirst({
+      where: {
+        id: Number(organizationId),
+        ownerId: req.userId!
+      }
+    });
+
+    if (!organization) {
+      return res.status(404).json({ message: 'Organization not found or you do not have permission to update it' });
+    }
+
+    const updatedOrg = await prisma.organization.update({
+      where: { id: Number(organizationId) },
       data: {
-        organizerBusinessName: businessName,
-        organizerDescription: description,
-        organizerContactInfo: contactInfo,
-        phone: phone,
-      },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        role: true,
-        isOrganizerVerified: true,
-        organizerBusinessName: true,
-        organizerDescription: true,
-        organizerContactInfo: true,
+        name: businessName || organization.name,
+        description: description || organization.description,
+        website: contactInfo || organization.website,
+        // phone: phone || organization.phone
       }
     });
 
     return res.json({
       message: 'Organizer profile updated successfully',
-      user
+      organization: updatedOrg
     });
   } catch (error) {
     console.error(error);
@@ -136,14 +164,24 @@ export const updateOrganizerProfile = async (req: AuthRequest, res: Response) =>
   }
 };
 
-// Get vendor applications for an organizer's events
+// Get vendor applications for an organizer's organizations
 export const getVendorApplications = async (req: AuthRequest, res: Response) => {
   try {
-    // Only return vendor applications for events organized by this user
-    const vendorApplications = await prisma.vendor.findMany({
+    // Only return vendor applications for events organized by organizations this user owns or is a member of
+    const vendorApplications = await prisma.vendorApplication.findMany({
       where: {
         event: {
-          organizerId: Number(req.userId)
+          organization: {
+            OR: [
+              { ownerId: Number(req.userId) },
+              { members: {
+                  some: {
+                    userId: Number(req.userId)
+                  }
+                }
+              }
+            ]
+          }
         }
       },
       include: {
@@ -161,10 +199,18 @@ export const getVendorApplications = async (req: AuthRequest, res: Response) => 
             title: true,
             startDate: true
           }
+        },
+        vendor: {
+          select: {
+            id: true,
+            businessName: true,
+            description: true,
+            contactEmail: true
+          }
         }
       },
       orderBy: {
-        createdAt: 'desc'
+        appliedAt: 'desc'
       }
     });
 
@@ -178,7 +224,7 @@ export const getVendorApplications = async (req: AuthRequest, res: Response) => 
 // Get user's vendor applications
 export const getMyVendorApplications = async (req: AuthRequest, res: Response) => {
   try {
-    const vendorApplications = await prisma.vendor.findMany({
+    const vendorApplications = await prisma.vendorApplication.findMany({
       where: {
         userId: Number(req.userId)
       },
@@ -190,18 +236,23 @@ export const getMyVendorApplications = async (req: AuthRequest, res: Response) =
             startDate: true,
             location: true
           }
+        },
+        vendor: {
+          select: {
+            id: true,
+            businessName: true,
+            description: true
+          }
         }
       },
       orderBy: {
-        createdAt: 'desc'
+        appliedAt: 'desc'
       }
     });
 
     return res.json(vendorApplications);
-    
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
-    
   }
 };

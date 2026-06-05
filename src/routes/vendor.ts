@@ -1,21 +1,32 @@
 import { Router } from 'express';
 import { 
   registerVendor, 
-  getVendors, 
-  getVendorById, 
-  updateVendorStatus 
+  getVendorApplications, 
+  getVendorApplicationById, 
+  updateVendorApplicationStatus,
+  createVendorProfile,
+  getUserVendorProfiles,
+  updateVendorProfile,
+  deleteVendorProfile
 } from '../controllers/vendor';
 import { verifyToken, requireRole } from '../middleware/auth';
 
 const router = Router();
 
-// Public routes - vendors can register themselves
-router.post('/register', verifyToken, registerVendor);
-router.get('/', getVendors);
+// Public routes
+router.get('/', getVendorApplications);
 
-// Protected routes
-router.get('/:id', verifyToken, getVendorById);
-router.put('/:id', verifyToken, requireRole('ORGANIZER', 'ADMIN'), updateVendorStatus);
-router.put('/:id/approve', verifyToken, requireRole('ORGANIZER', 'ADMIN'), updateVendorStatus);
+// Protected routes for vendor profiles
+router.post('/profiles', verifyToken, createVendorProfile);
+router.get('/profiles', verifyToken, getUserVendorProfiles);
+router.get('/profiles/:id', verifyToken, getVendorApplicationById);
+router.put('/profiles/:id', verifyToken, updateVendorProfile);
+router.delete('/profiles/:id', verifyToken, deleteVendorProfile);
+
+// Protected routes for vendor applications
+router.post('/applications', verifyToken, registerVendor);
+router.get('/applications', verifyToken, getVendorApplications);
+router.get('/applications/:id', verifyToken, getVendorApplicationById);
+router.put('/applications/:id/status', verifyToken, requireRole('ORGANIZER', 'ADMIN'), updateVendorApplicationStatus);
 
 export default router;

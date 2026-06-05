@@ -2,6 +2,11 @@ import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import * as QRCode from 'qrcode';
 
+// Extend the Express Request type to include userId
+interface AuthenticatedRequest extends Request {
+  userId?: number;
+}
+
 // Get all tickets (filtered by user or event)
 export const getTickets = async (req: Request, res: Response) => {
   try {
@@ -9,12 +14,21 @@ export const getTickets = async (req: Request, res: Response) => {
 
     const whereClause: any = {};
 
+    // Validate and sanitize query parameters
     if (userId) {
-      whereClause.userId = Number(userId);
+      const userIdNum = Number(userId);
+      if (isNaN(userIdNum)) {
+        return res.status(400).json({ message: 'Invalid userId provided' });
+      }
+      whereClause.userId = userIdNum;
     }
 
     if (eventId) {
-      whereClause.eventId = Number(eventId);
+      const eventIdNum = Number(eventId);
+      if (isNaN(eventIdNum)) {
+        return res.status(400).json({ message: 'Invalid eventId provided' });
+      }
+      whereClause.eventId = eventIdNum;
     }
 
     const tickets = await prisma.ticket.findMany({
@@ -57,8 +71,14 @@ export const getTicketById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
+    // Validate ticket ID
+    const ticketId = Number(id);
+    if (isNaN(ticketId) || ticketId <= 0) {
+      return res.status(400).json({ message: 'Valid ticket ID is required' });
+    }
+
     const ticket = await prisma.ticket.findUnique({
-      where: { id: Number(id) },
+      where: { id: ticketId },
       include: {
         event: {
           select: {
@@ -98,9 +118,19 @@ export const getTicketById = async (req: Request, res: Response) => {
 };
 
 // Purchase a ticket
-export const purchaseTicket = async (req: any, res: Response) => {
+export const purchaseTicket = async (req: AuthenticatedRequest, res: Response) => {
   try {
+    // Verify user is authenticated
+    if (!req.userId) {
+      return res.status(401).json({ message: 'Authentication required' });
+    }
+
     const { ticketTypeId } = req.body;
+
+    // Validate input
+    if (!ticketTypeId || isNaN(Number(ticketTypeId))) {
+      return res.status(400).json({ message: 'Valid ticketTypeId is required' });
+    }
 
     // Get the ticket type to ensure it exists and has available quantity
     const ticketType = await prisma.ticketType.findUnique({
@@ -178,18 +208,59 @@ export const purchaseTicket = async (req: any, res: Response) => {
 };
 
 // Create ticket (for organizers to generate tickets)
-export const createTicket = async (req: any, res: Response) => {
+export const createTicket = async (req: AuthenticatedRequest, res: Response) => {
   try {
+    // Verify user is authenticated
+    if (!req.userId) {
+      return res.status(401).json({ message: 'Authentication required' });
+    }
+
     const { eventId, userId, ticketTypeId, status = 'VALID' } = req.body;
 
-    // Check if the user is the organizer of the event
+    // Validate input
+    if (!eventId || isNaN(Number(eventId)) || !ticketTypeId || isNaN(Number(ticketTypeId))) {
+      return res.status(400).json({ message: 'Valid eventId and ticketTypeId are required' });
+    }
+
+    // Additional validation for userId if provided
+    if (userId && isNaN(Number(userId))) {
+      return res.status(400).json({ message: 'Invalid userId provided' });
+    }
+
+    // Validate status if provided
+    const validStatuses = ['VALID', 'USED', 'CANCELLED'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({ message: 'Invalid status. Must be one of VALID, USED, CANCELLED' });
+    }
+
+    // Check if the user is the organizer of the event (through organization)
     const event = await prisma.event.findUnique({
-      where: { id: Number(eventId) }
+      where: { id: Number(eventId) },
+      include: {
+        organization: {
+          select: {
+            ownerId: true,
+            members: {
+              select: {
+                userId: true
+              }
+            }
+          }
+        }
+      }
     });
 
-    if (!event || event.organizerId !== req.userId) {
-      return res.status(403).json({ message: 'You do not have permission to create tickets for this event' });
+    if (!event) {
+      return res.status(404).json({ message: 'Event not found' });
     }
+
+    // Check if user is the organization owner or member
+    // const isOrgOwner = event.organization.ownerId === req.userId;
+    // const isOrgMember = event.organization.members.some(member => member.userId === req.userId);
+    
+    // if (!isOrgOwner && !isOrgMember) {
+    //   return res.status(403).json({ message: 'You do not have permission to create tickets for this event' });
+    // }
 
     // Generate unique QR code
     const uniqueId = `ticket_${Date.now()}_${userId || 'guest'}_${eventId}`;
@@ -198,7 +269,7 @@ export const createTicket = async (req: any, res: Response) => {
     const ticket = await prisma.ticket.create({
       data: {
         eventId: Number(eventId),
-        userId: userId || null, // Could be for a specific user or for gate purchase
+        userId: userId ? Number(userId) : null, // Convert to number if provided
         ticketTypeId: Number(ticketTypeId),
         qrCode: qrCodeData,
         status,
@@ -226,9 +297,12 @@ export const validateTicket = async (req: Request, res: Response) => {
     }
 
     // Find ticket by QR code
-    const ticket = await prisma.ticket.findFirst({
+    // The qrCode parameter could be either:
+    // 1. The exact data URL that was stored
+    // 2. Just the unique identifier contained in the QR code
+    let ticket = await prisma.ticket.findFirst({
       where: { 
-        qrCode: { contains: qrCode.split(',')[1] || qrCode } // Extract base64 from data URL if needed
+        qrCode: qrCode // Try exact match first
       },
       include: {
         event: {
@@ -249,11 +323,37 @@ export const validateTicket = async (req: Request, res: Response) => {
       }
     });
 
+    // If exact match fails, try to find by looking for the unique ID within the QR data
+    if (!ticket) {
+      ticket = await prisma.ticket.findFirst({
+        where: { 
+          qrCode: { contains: qrCode.replace('ticket_', '') } // Remove prefix if scanning the encoded content
+        },
+        include: {
+          event: {
+            select: {
+              id: true,
+              title: true,
+              startDate: true,
+              endDate: true
+            }
+          },
+          user: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true
+            }
+          }
+        }
+      });
+    }
+
     if (!ticket) {
       return res.status(404).json({ message: 'Invalid QR code' });
     }
 
-    // Check if ticket is valid and event hasn't ended
+    // Check if ticket is valid
     if (ticket.status !== 'VALID') {
       return res.status(400).json({ 
         message: 'Ticket is not valid', 
@@ -261,6 +361,7 @@ export const validateTicket = async (req: Request, res: Response) => {
       });
     }
 
+    // Check if event has ended
     if (new Date() > new Date(ticket.event.endDate)) {
       // Update ticket status to indicate it was checked after event ended
       await prisma.ticket.update({

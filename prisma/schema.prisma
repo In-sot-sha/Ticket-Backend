@@ -28,29 +28,98 @@ enum PurchaseType {
   GATE
 }
 
+enum RecurrencePattern {
+  NONE
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+}
+
 model User {
-  id           Int       @id @default(autoincrement())
-  email        String    @unique
-  password     String
-  firstName    String
-  lastName     String
-  phone        String?
-  role         UserRole  @default(USER)
-  isVerified   Boolean   @default(false)
-  avatar       String?
+  id                    Int      @id @default(autoincrement())
+  email                 String   @unique
+  password              String
+  firstName             String
+  lastName              String
+  phone                 String?
+  role                  UserRole @default(USER)
+  isVerified            Boolean  @default(false)
+  avatar                String?
   // Organizer-specific fields
-  isOrganizerVerified Boolean @default(false)  // Whether the user's organizer status is verified
-  organizerBusinessName String?  // Business name if user is an organizer
-  organizerDescription String?   // Description of organizer's business
-  organizerContactInfo String?   // Additional contact info for organizer
-  
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  
+  isOrganizerVerified   Boolean  @default(false) // Whether the user's organizer status is verified
+  organizerBusinessName String? // Business name if user is an organizer
+  organizerDescription  String? // Description of organizer's business
+  organizerContactInfo  String? // Additional contact info for organizer
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  events       Event[]
-  tickets      Ticket[]
-  vendors      Vendor[]
+  ownedOrganizations     Organization[]           @relation("OwnedOrganizations")
+  memberOrganizations    OrganizationMember[]
+  followedOrganizations  UserOrganizationFollow[]
+  tickets                Ticket[]
+  vendorProfiles         Vendor[] // Vendor profiles this user owns
+  vendorApplicationsMade VendorApplication[]      @relation("VendorApplicationsMade") // Applications this user has made
+  ticketPurchases        TicketPurchase[]
+}
+
+model Organization {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  logo        String?
+  website     String?
+  ownerId     Int // Foreign key to User (owner)
+  isVerified  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  owner     User                     @relation("OwnedOrganizations", fields: [ownerId], references: [id])
+  members   OrganizationMember[]
+  followers UserOrganizationFollow[]
+  events    Event[]
+}
+
+model OrganizationMember {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  organizationId Int
+  role           String   @default("member") // member, admin, etc.
+  joinedAt       DateTime @default(now())
+
+  // Relations
+  user         User         @relation(fields: [userId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([userId, organizationId])
+}
+
+model UserOrganizationFollow {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  organizationId Int
+  followedAt     DateTime @default(now())
+
+  // Relations
+  user         User         @relation(fields: [userId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([userId, organizationId])
 }
 
 model Event {
@@ -59,8 +128,10 @@ model Event {
   description      String
   startDate        DateTime
   endDate          DateTime
-  location         String
-  organizerId      Int        // Foreign key to User (organizer)
+  location         String?    // Physical location if applicable
+  onlineUrl        String?    // URL for online events
+  locationType     String     // 'physical', 'online', or 'hybrid'
+  organizationId   Int?       // Foreign key to Organization (nullable for transition)
   price            Float?
   capacity         Int?
   imageUrl         String?
@@ -68,70 +139,153 @@ model Event {
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
   
+  // Recurring event fields
+  isRecurring      Boolean    @default(false)
+  recurrencePattern RecurrencePattern?  // If recurring, how often
+  recurrenceEnd    DateTime?  // When recurring ends
+  recurrenceInterval Int?     // How often to repeat (e.g. every N weeks)
+  
+  // Tags
+  tags             EventTagOnEvent[]
+  
   // Ticket types
   ticketTypes      TicketType[]
   
   // Vendors
   allowVendors     Boolean    @default(false)
-  stallType        String?    // e.g., "Food, Drinks, Merchandise"
-  stallFee         Float?     // null means free
-  maxVendors       Int?       
   vendorDeadline   DateTime?
   gateTicketing    Boolean    @default(false)  // Allow gate ticketing
-  vendors          Vendor[]
+  vendorTypes      VendorType[] // Support multiple vendor types per event
+  vendorApplications VendorApplication[]
   
   // Relations
-  organizer        User       @relation(fields: [organizerId], references: [id])
+  organization     Organization? @relation(fields: [organizationId], references: [id])
   tickets          Ticket[]
+  ticketPurchases  TicketPurchase[]
+}
+
+// Event tags model
+model EventTag {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  // Relations
+  events EventTagOnEvent[]
+}
+
+model EventTagOnEvent {
+  eventId Int
+  tagId   Int
+  event   Event    @relation(fields: [eventId], references: [id])
+  tag     EventTag @relation(fields: [tagId], references: [id])
+
+  @@id([eventId, tagId])
+}
+
+// Ticket purchases model (for tracking user ticket purchases)
+model TicketPurchase {
+  id           Int          @id @default(autoincrement())
+  userId       Int // User who purchased the ticket
+  eventId      Int
+  ticketTypeId Int
+  qrCode       String // Unique QR code for the ticket
+  status       TicketStatus @default(VALID)
+  purchaseType PurchaseType @default(ONLINE)
+  purchaseDate DateTime     @default(now())
+
+  // Relations
+  user       User       @relation(fields: [userId], references: [id])
+  event      Event      @relation(fields: [eventId], references: [id])
+  ticketType TicketType @relation(fields: [ticketTypeId], references: [id])
+}
+
+// Vendor profiles model (for storing vendor information for easy application)
+model Vendor {
+  id           Int      @id @default(autoincrement())
+  userId       Int // The user who owns this vendor profile
+  businessName String
+  description  String?
+  contactEmail String
+  contactPhone String?
+  website      String?
+  logo         String?
+  category     String? // e.g., "Food", "Merchandise", "Services"
+  isVerified   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  user         User                @relation(fields: [userId], references: [id])
+  applications VendorApplication[]
+}
+
+// Vendor applications model (for managing vendor applications to events)
+model VendorApplication {
+  id                Int               @id @default(autoincrement())
+  vendorId          Int // The vendor profile applying
+  userId            Int // The user who made the application
+  eventId           Int
+  vendorTypeId      Int? // Reference to the specific vendor type (nullable for backward compatibility during migration)
+  applicationStatus ApplicationStatus @default(PENDING)
+  paymentAmount     Float?
+  paymentStatus     PaymentStatus     @default(PENDING)
+  appliedAt         DateTime          @default(now())
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+
+  // Relations
+  vendor Vendor @relation(fields: [vendorId], references: [id])
+  user   User   @relation("VendorApplicationsMade", fields: [userId], references: [id])
+  event  Event  @relation(fields: [eventId], references: [id])
+  vendorType VendorType? @relation(fields: [vendorTypeId], references: [id]) // Relation to vendor type
+
+  @@unique([vendorId, eventId])
 }
 
 model TicketType {
-  id          Int      @id @default(autoincrement())
-  name        String   // e.g. "General", "VIP", "Early Bird"
-  price       Float
-  quantity    Int?
-  eventId     Int      // Foreign key to Event
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  id        Int      @id @default(autoincrement())
+  name      String // e.g. "General", "VIP", "Early Bird"
+  price     Float
+  quantity  Int?
+  eventId   Int // Foreign key to Event
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  event       Event    @relation(fields: [eventId], references: [id])
-  tickets     Ticket[]
+  event           Event            @relation(fields: [eventId], references: [id])
+  tickets         Ticket[]
+  ticketPurchases TicketPurchase[]
 }
 
 model Ticket {
-  id             Int          @id @default(autoincrement())
-  eventId        Int
-  userId         Int?
-  ticketTypeId   Int          // Foreign key to TicketType
-  qrCode         String       // Unique QR code for the ticket
-  status         TicketStatus @default(VALID)
-  purchaseType   PurchaseType @default(ONLINE)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  
+  id           Int          @id @default(autoincrement())
+  eventId      Int
+  userId       Int?
+  ticketTypeId Int // Foreign key to TicketType
+  qrCode       String // Unique QR code for the ticket
+  status       TicketStatus @default(VALID)
+  purchaseType PurchaseType @default(ONLINE)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
   // Relations
-  event          Event        @relation(fields: [eventId], references: [id])
-  user           User?        @relation(fields: [userId], references: [id])
-  ticketType     TicketType   @relation(fields: [ticketTypeId], references: [id])
+  event      Event      @relation(fields: [eventId], references: [id])
+  user       User?      @relation(fields: [userId], references: [id])
+  ticketType TicketType @relation(fields: [ticketTypeId], references: [id])
 }
 
-model Vendor {
-  id             Int       @id @default(autoincrement())
-  userId         Int       // The user who registered as a vendor
-  eventId        Int
-  name           String    // Contact person name
-  businessName   String
-  description    String?
-  contactEmail   String
-  contactPhone   String?
-  isApproved     Boolean   @default(false)
-  isPaid         Boolean   @default(false)
-  paymentAmount  Float?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+// Model for different vendor types within an event
+model VendorType {
+  id           Int      @id @default(autoincrement())
+  name         String   // e.g. "Food", "Merchandise", "Services"
+  fee          Float?   // Fee for this type of vendor (null means free)
+  maxVendors   Int?     // Maximum number of vendors for this type
+  eventId      Int      // Foreign key to Event
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   // Relations
-  user           User      @relation(fields: [userId], references: [id])
-  event          Event     @relation(fields: [eventId], references: [id])
+  event    Event  @relation(fields: [eventId], references: [id])
+  applications VendorApplication[]
 }

@@ -21,7 +21,7 @@
   "author": "Eventify",
   "license": "MIT",
   "dependencies": {
-    "@prisma/client": "^5.0.0",
+    "@prisma/client": "^4.16.2",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
@@ -43,7 +43,7 @@
     "@types/nodemailer": "^6.4.11",
     "@types/qrcode": "^1.5.2",
     "nodemon": "^3.0.1",
-    "prisma": "^6.18.0",
+    "prisma": "^4.16.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.2.2"
   }
