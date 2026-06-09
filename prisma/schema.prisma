@@ -135,6 +135,8 @@ model Event {
   price            Float?
   capacity         Int?
   imageUrl         String?
+  amenities        String?    @db.Text // JSON array of strings
+  highlights       String?    @db.Text // JSON array of { icon, label }
   isPublished      Boolean    @default(false)
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
@@ -244,13 +246,18 @@ model VendorApplication {
 }
 
 model TicketType {
-  id        Int      @id @default(autoincrement())
-  name      String // e.g. "General", "VIP", "Early Bird"
-  price     Float
-  quantity  Int?
-  eventId   Int // Foreign key to Event
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          Int      @id @default(autoincrement())
+  name        String // e.g. "General", "VIP", "Early Bird"
+  price       Float
+  quantity    Int?
+  eventId     Int // Foreign key to Event
+  ticketStyle    String   @default("rose") // Visual preset: rose, gold, emerald, purple, midnight, ocean
+  accentColor    String?  // Optional custom hex override for the ticket stub
+  badgeText      String?  // Custom label on the ticket stub (defaults to ticket name)
+  ticketHeadline String?  // e.g. "COME AND JOIN"
+  venueLabel     String?  // e.g. "LIVE AT"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   // Relations
   event           Event            @relation(fields: [eventId], references: [id])

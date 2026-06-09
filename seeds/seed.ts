@@ -8,9 +8,17 @@ async function seedDatabase() {
 
   try {
     // Clear existing data (optional, for testing)
+    await prisma.vendorApplication.deleteMany({});
     await prisma.vendor.deleteMany({});
     await prisma.ticket.deleteMany({});
+    await prisma.ticketPurchase.deleteMany({});
+    await prisma.ticketType.deleteMany({});
+    await prisma.vendorType.deleteMany({});
+    await prisma.eventTagOnEvent.deleteMany({});
     await prisma.event.deleteMany({});
+    await prisma.organizationMember.deleteMany({});
+    await prisma.userOrganizationFollow.deleteMany({});
+    await prisma.organization.deleteMany({});
     await prisma.user.deleteMany({});
 
     // Create sample users with different roles
@@ -42,7 +50,7 @@ async function seedDatabase() {
       }
     });
 
-    const vendor = await prisma.user.create({
+    const vendorUser = await prisma.user.create({
       data: {
         email: 'vendor@example.com',
         password: await hashPassword('password123'),
@@ -54,7 +62,22 @@ async function seedDatabase() {
       }
     });
 
+    const organization = await prisma.organization.create({
+      data: {
+        name: 'Event Pro Ltd',
+        description: 'Professional event management company',
+        ownerId: organizer.id,
+        isVerified: true,
+      }
+    });
 
+    await prisma.organizationMember.create({
+      data: {
+        userId: organizer.id,
+        organizationId: organization.id,
+        role: 'admin',
+      }
+    });
 
     // Create sample events
     const event1 = await prisma.event.create({
@@ -64,14 +87,12 @@ async function seedDatabase() {
         startDate: new Date('2023-12-15'),
         endDate: new Date('2023-12-16'),
         location: 'Lagos, Nigeria',
+        locationType: 'physical',
         price: 50000,
         capacity: 500,
         isPublished: true,
-        organizerId: organizer.id,
+        organizationId: organization.id,
         allowVendors: true,
-        stallType: 'Technology',
-        stallFee: 50000,
-        maxVendors: 20,
         vendorDeadline: new Date('2023-12-01'),
         gateTicketing: true
       }
@@ -84,16 +105,32 @@ async function seedDatabase() {
         startDate: new Date('2024-01-20'),
         endDate: new Date('2024-01-21'),
         location: 'Abuja, Nigeria',
+        locationType: 'physical',
         price: 30000,
         capacity: 1000,
         isPublished: true,
-        organizerId: organizer.id,
+        organizationId: organization.id,
         allowVendors: true,
-        stallType: 'Food & Drinks',
-        stallFee: 30000,
-        maxVendors: 30,
         vendorDeadline: new Date('2024-01-05'),
         gateTicketing: true
+      }
+    });
+
+    const vendorType1 = await prisma.vendorType.create({
+      data: {
+        name: 'Technology',
+        fee: 50000,
+        maxVendors: 20,
+        eventId: event1.id,
+      }
+    });
+
+    const vendorType2 = await prisma.vendorType.create({
+      data: {
+        name: 'Food & Drinks',
+        fee: 30000,
+        maxVendors: 30,
+        eventId: event2.id,
       }
     });
 
@@ -163,34 +200,41 @@ async function seedDatabase() {
       });
     }
 
-    // Create sample vendor applications
-    await prisma.vendor.create({
+    const vendorProfile = await prisma.vendor.create({
       data: {
-        userId: vendor.id,
-        eventId: event1.id,
-        name: 'Mike Johnson',
+        userId: vendorUser.id,
         businessName: 'Tech Gadgets Ltd',
         description: 'Selling the latest tech gadgets and accessories',
         contactEmail: 'contact@techgadgets.com',
         contactPhone: '+2348012345699',
-        isApproved: true,
-        isPaid: true,
-        paymentAmount: 50000
+        category: 'Technology',
+        isVerified: true,
       }
     });
 
-    await prisma.vendor.create({
+    // Create sample vendor applications
+    await prisma.vendorApplication.create({
       data: {
-        userId: vendor.id,
+        vendorId: vendorProfile.id,
+        userId: vendorUser.id,
+        eventId: event1.id,
+        vendorTypeId: vendorType1.id,
+        applicationStatus: 'APPROVED',
+        paymentAmount: 50000,
+        paymentStatus: 'PAID',
+        approvedAt: new Date(),
+      }
+    });
+
+    await prisma.vendorApplication.create({
+      data: {
+        vendorId: vendorProfile.id,
+        userId: vendorUser.id,
         eventId: event2.id,
-        name: 'Mike Johnson',
-        businessName: 'Food Delights',
-        description: 'Delicious local cuisine',
-        contactEmail: 'info@fooddelights.com',
-        contactPhone: '+2348012345700',
-        isApproved: false,
-        isPaid: true,
-        paymentAmount: 30000
+        vendorTypeId: vendorType2.id,
+        applicationStatus: 'PENDING',
+        paymentAmount: 30000,
+        paymentStatus: 'PAID',
       }
     });
 

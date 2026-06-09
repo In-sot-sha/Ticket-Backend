@@ -159,7 +159,7 @@ export const getOrganizationById = async (req: AuthRequest, res: Response) => {
 
     // Check if user has permission to view this organization
     const isOwner = organization.ownerId === req.userId;
-    const isMember = organization.members.some(member => member.user.id === req.userId);
+    const isMember = organization.members.some((member: (typeof organization.members)[number]) => member.user.id === req.userId);
     
     if (!isOwner && !isMember) {
       return res.status(403).json({ message: 'You do not have permission to view this organization' });
