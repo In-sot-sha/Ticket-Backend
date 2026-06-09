@@ -162,3 +162,72 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ message: 'Server error' });
   }
 };
+
+// Google Auth Login/Register
+export const googleLogin = async (req: Request, res: Response) => {
+  try {
+    const { credential } = req.body;
+
+    if (!credential) {
+      return res.status(400).json({ message: 'Google credential is required' });
+    }
+
+    // Verify token with Google API
+    const googleVerifyUrl = `https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`;
+    const response = await fetch(googleVerifyUrl);
+    
+    if (!response.ok) {
+      return res.status(400).json({ message: 'Invalid Google credential token' });
+    }
+
+    const payload: any = await response.json();
+    const { email, given_name, family_name, picture, email_verified } = payload;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email not provided by Google account' });
+    }
+
+    // Find or create user
+    let user = await prisma.user.findUnique({
+      where: { email }
+    });
+
+    if (!user) {
+      // Create a new guest user with Google details
+      const randomPassword = Math.random().toString(36).slice(-10) + 'A1!';
+      const hashedPassword = await hashPassword(randomPassword);
+      
+      user = await prisma.user.create({
+        data: {
+          email,
+          password: hashedPassword,
+          firstName: given_name || 'Google',
+          lastName: family_name || 'User',
+          avatar: picture || null,
+          role: 'USER',
+          isVerified: email_verified === 'true' || email_verified === true
+        }
+      });
+    }
+
+    // Generate token
+    const token = generateToken(user.id, user.role);
+
+    return res.json({
+      message: 'Google login successful',
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        avatar: user.avatar
+      }
+    });
+
+  } catch (error) {
+    console.error('Google Auth error:', error);
+    return res.status(500).json({ message: 'Server error during Google login' });
+  }
+};

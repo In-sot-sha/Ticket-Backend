@@ -1,2 +1,20 @@
+# Environment variables — never commit secrets
 .env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Dependencies
 node_modules
+
+# Build output
+dist
+
+# Uploads (user-uploaded files should not be committed)
+uploads/*
+!uploads/.gitkeep
+
+# OS noise
+.DS_Store

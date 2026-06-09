@@ -135,6 +135,7 @@ model Event {
   price            Float?
   capacity         Int?
   imageUrl         String?
+  category         String?
   isPublished      Boolean    @default(false)
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt

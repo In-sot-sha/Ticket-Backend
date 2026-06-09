@@ -7,7 +7,7 @@ import { AuthRequest } from '../middleware/auth';
 // Get all events
 export const getEvents = async (req: Request, res: Response) => {
   try {
-    const { search, location, date, page = 1, limit = 10 } = req.query;
+    const { search, location, date, category, page = 1, limit = 10 } = req.query;
 
     // Validate pagination parameters
     const pageNum = Math.max(1, Number(page));
@@ -27,6 +27,10 @@ export const getEvents = async (req: Request, res: Response) => {
 
     if (location) {
       whereClause.location = { contains: String(location), mode: 'insensitive' };
+    }
+
+    if (category) {
+      whereClause.category = String(category);
     }
 
     if (date) {
@@ -160,6 +164,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       location, 
       price, 
       capacity,
+      category,
       ticketTypes,
       allowVendors,
       stallType,
@@ -235,6 +240,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
         price: price ? parseFloat(price) : null,
         capacity: capacity ? parseInt(capacity) : null,
         imageUrl, // Add the image URL to the event
+        category,
         isPublished: isPublished === 'true', // Convert string to boolean
         organizationId: orgId, // Use organization ID instead of organizerId
         allowVendors: allowVendors === 'true',
@@ -313,6 +319,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       location, 
       price, 
       capacity,
+      category,
       isPublished,
       ticketTypes,
       allowVendors,
@@ -388,6 +395,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       price: price ? parseFloat(price) : existingEvent.price,
       capacity: capacity ? parseInt(capacity) : existingEvent.capacity,
       imageUrl: imageUrl, // Use the updated imageUrl
+      category: category ?? existingEvent.category,
       isPublished: isPublished ? isPublished === 'true' : existingEvent.isPublished, // Convert string to boolean
       allowVendors: allowVendors ? allowVendors === 'true' : existingEvent.allowVendors,
       vendorDeadline: vendorDeadline ? new Date(vendorDeadline) : existingEvent.vendorDeadline,

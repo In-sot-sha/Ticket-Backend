@@ -7,6 +7,7 @@ import vendorTypeRoutes from './vendorType'
 import userRoleRoutes from './userRole'
 import organizationRoutes from './organization'
 import organizationMemberRoutes from './organizationMember'
+import paymentRoutes from './payment'
 
 const router: Router = express.Router()
 
@@ -18,6 +19,6 @@ router.use("/vendor-types", vendorTypeRoutes);
 router.use("/user-roles", userRoleRoutes);
 router.use("/organizations", organizationRoutes);
 router.use("/org-members", organizationMemberRoutes);
-
+router.use("/payments", paymentRoutes);
 
 export default router

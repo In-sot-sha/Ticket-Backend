@@ -12,7 +12,7 @@ router.get('/get-event/:id', getEventById);
 // Protected routes
 router.get('/organizer', verifyToken,  getOrganizerEvents); // Get events for the authenticated organizer
 router.post('/', verifyToken,  upload.single('image'), createEvent);
-router.get('/:id', verifyToken, getEventById);
+router.get('/:id', getEventById);
 // router.post('/vendor', verifyToken,  upload.single('image'), createEvent);
 router.put('/update/:id', verifyToken, requireRole('ORGANIZER', 'ADMIN'), upload.single('image'), updateEvent);
 router.delete('/delete/:id', verifyToken, requireRole('ORGANIZER', 'ADMIN'), deleteEvent);
