@@ -4,10 +4,10 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 
-import router from './routes';
-
-// Load environment variables
+// Load env before other app modules read process.env
 dotenv.config();
+
+import router from './routes';
 
 // Initialize Prisma Client
 
@@ -25,6 +25,9 @@ if (!fs.existsSync(uploadsDir)) {
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve locally stored uploads (fallback when Cloudinary is unavailable)
+app.use('/uploads', express.static(uploadsDir));
 
 // Routes
 app.use('/api/', router);

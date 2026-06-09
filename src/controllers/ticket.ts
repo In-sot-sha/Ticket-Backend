@@ -40,8 +40,9 @@ export const getTickets = async (req: Request, res: Response) => {
             id: true,
             title: true,
             startDate: true,
+            endDate: true,
             location: true,
-            imageUrl: true
+            imageUrl: true,
           }
         },
         user: {
@@ -55,7 +56,10 @@ export const getTickets = async (req: Request, res: Response) => {
           select: {
             id: true,
             name: true,
-            price: true
+            price: true,
+            ticketStyle: true,
+            accentColor: true,
+            badgeText: true,
           }
         }
       }
@@ -102,7 +106,10 @@ export const getTicketById = async (req: Request, res: Response) => {
           select: {
             id: true,
             name: true,
-            price: true
+            price: true,
+            ticketStyle: true,
+            accentColor: true,
+            badgeText: true,
           }
         }
       }
