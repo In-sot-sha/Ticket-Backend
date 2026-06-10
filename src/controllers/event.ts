@@ -284,7 +284,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       location, 
       price, 
       capacity,
-      category,
+      category: _category,
       ticketTypes,
       allowVendors,
       stallType,
@@ -463,7 +463,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       location, 
       price, 
       capacity,
-      category,
+      category: _category2,
       isPublished,
       ticketTypes,
       allowVendors,
@@ -593,26 +593,70 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
 
     // Update ticket types if provided
     if (parsedTicketTypes?.length) {
-      // Delete existing ticket types
-      await prisma.ticketType.deleteMany({
-        where: { eventId: Number(id) }
+      // We cannot simply deleteMany because existing Ticket rows reference ticketTypeId via a
+      // foreign key. Instead:
+      //   1. Update ticket types that still exist (matched by name)
+      //   2. Create brand-new ones
+      //   3. For removed types: only delete if no tickets have been sold against them;
+      //      otherwise mark quantity=0 so no more can be sold but history is preserved.
+
+      const existingTypes = await prisma.ticketType.findMany({
+        where: { eventId: Number(id) },
+        select: { id: true, name: true },
       });
 
-      // Create new ticket types
-      for (const ticketType of parsedTicketTypes) {
-        await prisma.ticketType.create({
-          data: {
-            name: ticketType.name,
-            price: parseFloat(String(ticketType.price ?? 0)),
-            quantity: parseInt(String(ticketType.quantity ?? 0), 10),
-            ticketStyle: ticketType.ticketStyle || 'rose',
-            accentColor: ticketType.accentColor || null,
-            badgeText: ticketType.badgeText || null,
-            ticketHeadline: ticketType.ticketHeadline || null,
-            venueLabel: ticketType.venueLabel || null,
-            eventId: event.id
+      const incomingNames = new Set(parsedTicketTypes.map((t) => t.name));
+
+      // Handle removed ticket types
+      for (const existing of existingTypes) {
+        if (!incomingNames.has(existing.name)) {
+          const soldCount = await prisma.ticket.count({
+            where: { ticketTypeId: existing.id, status: { in: ['VALID', 'USED'] } },
+          });
+          if (soldCount === 0) {
+            // Safe to delete — nobody has bought this type
+            await prisma.ticketType.delete({ where: { id: existing.id } });
+          } else {
+            // Tickets exist — set quantity to 0 to prevent future sales, don't delete
+            await prisma.ticketType.update({
+              where: { id: existing.id },
+              data: { quantity: 0 },
+            });
           }
-        });
+        }
+      }
+
+      // Upsert incoming ticket types
+      for (const ticketType of parsedTicketTypes) {
+        const match = existingTypes.find((e) => e.name === ticketType.name);
+        if (match) {
+          await prisma.ticketType.update({
+            where: { id: match.id },
+            data: {
+              price: parseFloat(String(ticketType.price ?? 0)),
+              quantity: parseInt(String(ticketType.quantity ?? 0), 10),
+              ticketStyle: ticketType.ticketStyle || 'rose',
+              accentColor: ticketType.accentColor || null,
+              badgeText: ticketType.badgeText || null,
+              ticketHeadline: ticketType.ticketHeadline || null,
+              venueLabel: ticketType.venueLabel || null,
+            },
+          });
+        } else {
+          await prisma.ticketType.create({
+            data: {
+              name: ticketType.name,
+              price: parseFloat(String(ticketType.price ?? 0)),
+              quantity: parseInt(String(ticketType.quantity ?? 0), 10),
+              ticketStyle: ticketType.ticketStyle || 'rose',
+              accentColor: ticketType.accentColor || null,
+              badgeText: ticketType.badgeText || null,
+              ticketHeadline: ticketType.ticketHeadline || null,
+              venueLabel: ticketType.venueLabel || null,
+              eventId: event.id,
+            },
+          });
+        }
       }
     }
     
