@@ -8,6 +8,7 @@ import userRoleRoutes from './userRole'
 import organizationRoutes from './organization'
 import organizationMemberRoutes from './organizationMember'
 import paymentRoutes from './payment'
+import gatePinRoutes from './gatePin'
 
 const router: Router = express.Router()
 
@@ -20,5 +21,6 @@ router.use("/user-roles", userRoleRoutes);
 router.use("/organizations", organizationRoutes);
 router.use("/org-members", organizationMemberRoutes);
 router.use("/payments", paymentRoutes);
+router.use("/gate-pins", gatePinRoutes);
 
 export default router

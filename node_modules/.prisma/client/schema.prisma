@@ -75,6 +75,7 @@ model User {
   vendorProfiles         Vendor[] // Vendor profiles this user owns
   vendorApplicationsMade VendorApplication[]      @relation("VendorApplicationsMade") // Applications this user has made
   ticketPurchases        TicketPurchase[]
+  gatePinsCreated        GatePin[]                @relation("GatePinsCreated")
 }
 
 model Organization {
@@ -93,6 +94,7 @@ model Organization {
   members   OrganizationMember[]
   followers UserOrganizationFollow[]
   events    Event[]
+  gatePins  GatePin[]
 }
 
 model OrganizationMember {
@@ -296,4 +298,21 @@ model VendorType {
   // Relations
   event    Event  @relation(fields: [eventId], references: [id])
   applications VendorApplication[]
+}
+
+// Gate scanner PINs — lets gate staff scan tickets without a full account
+model GatePin {
+  id             Int      @id @default(autoincrement())
+  pin            String   // 6-digit numeric PIN
+  staffName      String   // Display name for the gate worker
+  organizationId Int      // Which organisation issued this PIN
+  createdById    Int      // Organiser user who created it
+  createdAt      DateTime @default(now())
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  createdBy    User         @relation("GatePinsCreated", fields: [createdById], references: [id])
+
+  @@unique([pin, organizationId]) // PINs unique per org
+  @@index([organizationId])
 }
