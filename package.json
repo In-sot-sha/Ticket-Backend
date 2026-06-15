@@ -4,19 +4,19 @@
   "description": "Backend for Eventify event ticketing platform",
   "main": "dist/index.js",
   "engines": {
-    "node": ">=18.x"
+    "node": "18.x"
   },
   "scripts": {
     "dev": "nodemon src/index.ts",
     "build": "tsc",
-    "vercel-build": "npx prisma generate && tsc",
+    "vercel-build": "node scripts/set-prisma-provider.js && npx prisma generate && tsc",
     "start": "node dist/index.js",
-    "db:generate": "npx prisma generate",
-    "db:migrate": "npx prisma migrate dev",
-    "db:push": "npx prisma db push",
-    "db:studio": "npx prisma studio",
+    "db:generate": "node scripts/set-prisma-provider.js && npx prisma generate",
+    "db:migrate": "node scripts/set-prisma-provider.js && npx prisma migrate dev",
+    "db:push": "node scripts/set-prisma-provider.js && npx prisma db push",
+    "db:studio": "node scripts/set-prisma-provider.js && npx prisma studio",
     "seed": "ts-node seeds/seed.ts",
-    "postinstall": "npx prisma generate"
+    "postinstall": "node scripts/set-prisma-provider.js && npx prisma generate"
   },
   "keywords": [
     "event",
