@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "nodemon src/index.ts",
     "build": "tsc",
-    "vercel-build": "node scripts/set-prisma-provider.js && npx prisma generate && tsc",
+    "vercel-build": "node scripts/set-prisma-provider.js && npx prisma generate",
     "start": "node dist/index.js",
     "db:generate": "node scripts/set-prisma-provider.js && npx prisma generate",
     "db:migrate": "node scripts/set-prisma-provider.js && npx prisma migrate dev",
