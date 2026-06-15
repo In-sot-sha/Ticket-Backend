@@ -18,8 +18,8 @@ if (dbUrl.startsWith('postgres')) {
 console.log(`[Prisma setup] Detected ${provider} from URL`);
 
 schema = schema.replace(
-  /provider\s*=\s*"[^"]+"/,
-  `provider = "${provider}"`
+  /datasource\s+db\s*\{[^}]*provider\s*=\s*"[^"]+"/,
+  (match) => match.replace(/provider\s*=\s*"[^"]+"/, `provider = "${provider}"`)
 );
 
 // If on Vercel with the prefix, update the schema url to look for it
