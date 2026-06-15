@@ -15,7 +15,7 @@ const app = express();
 // Allow requests from any origin in dev; restrict to your domain in production.
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000'];
+  : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000',`https://eventgo-frontend.vercel.app`];
 
 app.use(
   cors({
