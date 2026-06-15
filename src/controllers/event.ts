@@ -60,8 +60,8 @@ async function buildEventStats(
   const rows = soldByType as TicketSoldGroupRow[];
   const countFor = (ticketTypeId: number, statuses: TicketStatus[]) =>
     rows
-      .filter((r) => r.ticketTypeId === ticketTypeId && statuses.includes(r.status))
-      .reduce((sum: number, r) => sum + r._count.id, 0);
+      .filter((r: any) => r.ticketTypeId === ticketTypeId && statuses.includes(r.status))
+      .reduce((sum: number, r: any) => sum + r._count.id, 0);
 
   let ticketsSold = 0;
   let ticketsCheckedIn = 0;
@@ -69,7 +69,7 @@ async function buildEventStats(
   let expectedRevenue = 0;
   let ticketInventory = 0;
 
-  const ticketTypeStats = ticketTypes.map((tt) => {
+  const ticketTypeStats = ticketTypes.map((tt: any) => {
     const sold = countFor(tt.id, ['VALID', 'USED']);
     const checkedIn = countFor(tt.id, ['USED']);
     const revenue = tt.price * sold;
@@ -605,7 +605,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
         select: { id: true, name: true },
       });
 
-      const incomingNames = new Set(parsedTicketTypes.map((t) => t.name));
+      const incomingNames = new Set(parsedTicketTypes.map((t: any) => t.name));
 
       // Handle removed ticket types
       for (const existing of existingTypes) {
@@ -628,7 +628,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
 
       // Upsert incoming ticket types
       for (const ticketType of parsedTicketTypes) {
-        const match = existingTypes.find((e) => e.name === ticketType.name);
+        const match = existingTypes.find((e: any) => e.name === ticketType.name);
         if (match) {
           await prisma.ticketType.update({
             where: { id: match.id },
@@ -991,12 +991,12 @@ export const getOrganizerAnalytics = async (req: AuthRequest, res: Response) => 
       }
     }
 
-    const monthly = monthKeys.map((k) => monthlyMap.get(k)!);
+    const monthly = monthKeys.map((k: any) => monthlyMap.get(k)!);
 
     const topEvents = [...eventsWithStats]
       .sort((a: EventWithStats, b: EventWithStats) => b.stats.actualRevenue - a.stats.actualRevenue)
       .slice(0, 5)
-      .map((e) => ({
+      .map((e: any) => ({
         id: e.id,
         title: e.title,
         startDate: e.startDate,
