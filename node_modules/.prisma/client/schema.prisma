@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -58,11 +58,7 @@ model User {
   role                  UserRole @default(USER)
   isVerified            Boolean  @default(false)
   avatar                String?
-  // Organizer-specific fields
-  isOrganizerVerified   Boolean  @default(false) // Whether the user's organizer status is verified
-  organizerBusinessName String? // Business name if user is an organizer
-  organizerDescription  String? // Description of organizer's business
-  organizerContactInfo  String? // Additional contact info for organizer
+
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -74,7 +70,7 @@ model User {
   tickets                Ticket[]
   vendorProfiles         Vendor[] // Vendor profiles this user owns
   vendorApplicationsMade VendorApplication[]      @relation("VendorApplicationsMade") // Applications this user has made
-  ticketPurchases        TicketPurchase[]
+  orders                 Order[]
   gatePinsCreated        GatePin[]                @relation("GatePinsCreated")
 }
 
@@ -84,10 +80,22 @@ model Organization {
   description String?
   logo        String?
   website     String?
+  socials     String?
   ownerId     Int // Foreign key to User (owner)
   isVerified  Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  // Payout Settings
+  payoutBankName      String?
+  payoutAccountNumber String?
+  payoutAccountName   String?
+  payoutSchedule      String? @default("AFTER_EVENT")
+
+  // Tax Settings
+  taxId               String?
+  vatNumber           String?
+  businessAddress     String? @db.Text
 
   // Relations
   owner     User                     @relation("OwnedOrganizations", fields: [ownerId], references: [id])
@@ -95,6 +103,7 @@ model Organization {
   followers UserOrganizationFollow[]
   events    Event[]
   gatePins  GatePin[]
+  payouts   Payout[]
 }
 
 model OrganizationMember {
@@ -151,7 +160,7 @@ model Event {
   recurrenceInterval Int?     // How often to repeat (e.g. every N weeks)
   
   // Tags
-  tags             EventTagOnEvent[]
+  tags             Json?      // JSON array of strings
   
   // Ticket types
   ticketTypes      TicketType[]
@@ -166,43 +175,40 @@ model Event {
   // Relations
   organization     Organization? @relation(fields: [organizationId], references: [id])
   tickets          Ticket[]
-  ticketPurchases  TicketPurchase[]
+  orders           Order[]
 }
 
-// Event tags model
-model EventTag {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
-  createdAt DateTime @default(now())
 
-  // Relations
-  events EventTagOnEvent[]
-}
 
-model EventTagOnEvent {
-  eventId Int
-  tagId   Int
-  event   Event    @relation(fields: [eventId], references: [id])
-  tag     EventTag @relation(fields: [tagId], references: [id])
-
-  @@id([eventId, tagId])
-}
-
-// Ticket purchases model (for tracking user ticket purchases)
-model TicketPurchase {
+// Order model to replace redundant TicketPurchase
+model Order {
   id           Int          @id @default(autoincrement())
-  userId       Int // User who purchased the ticket
+  userId       Int // User who made the order
   eventId      Int
-  ticketTypeId Int
-  qrCode       String // Unique QR code for the ticket
-  status       TicketStatus @default(VALID)
+  totalAmount  Float        @default(0)
+  platformFee  Float        @default(0)
+  processingFee Float       @default(0)
+  netAmount    Float        @default(0)
+  status       PaymentStatus @default(PENDING)
   purchaseType PurchaseType @default(ONLINE)
-  purchaseDate DateTime     @default(now())
+  createdAt    DateTime     @default(now())
 
   // Relations
   user       User       @relation(fields: [userId], references: [id])
   event      Event      @relation(fields: [eventId], references: [id])
-  ticketType TicketType @relation(fields: [ticketTypeId], references: [id])
+  tickets    Ticket[]
+}
+
+model Payout {
+  id             Int      @id @default(autoincrement())
+  organizationId Int
+  amount         Float
+  status         PaymentStatus @default(PENDING)
+  reference      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
 }
 
 // Vendor profiles model (for storing vendor information for easy application)
@@ -265,7 +271,6 @@ model TicketType {
   // Relations
   event           Event            @relation(fields: [eventId], references: [id])
   tickets         Ticket[]
-  ticketPurchases TicketPurchase[]
 }
 
 model Ticket {
@@ -276,6 +281,7 @@ model Ticket {
   qrCode       String // Unique QR code for the ticket
   status       TicketStatus @default(VALID)
   purchaseType PurchaseType @default(ONLINE)
+  orderId      Int? // Optional link to the order transaction
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -283,6 +289,7 @@ model Ticket {
   event      Event      @relation(fields: [eventId], references: [id])
   user       User?      @relation(fields: [userId], references: [id])
   ticketType TicketType @relation(fields: [ticketTypeId], references: [id])
+  order      Order?     @relation(fields: [orderId], references: [id])
 }
 
 // Model for different vendor types within an event

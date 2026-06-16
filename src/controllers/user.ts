@@ -44,7 +44,8 @@ export const register = async (req: Request, res: Response) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
-        role: user.role
+        role: user.role,
+        ownedOrganizations: []
       }
     });
 
@@ -62,7 +63,10 @@ export const login = async (req: Request, res: Response) => {
 
     // Find user by email
     const user = await prisma.user.findUnique({
-      where: { email }
+      where: { email },
+      include: {
+        ownedOrganizations: true
+      }
     });
 
     if (!user) {
@@ -88,7 +92,8 @@ export const login = async (req: Request, res: Response) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
-        role: user.role
+        role: user.role,
+        ownedOrganizations: user.ownedOrganizations || []
       }
     });
 
@@ -112,7 +117,8 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
         role: true,
         avatar: true,
         isVerified: true,
-        createdAt: true
+        createdAt: true,
+        ownedOrganizations: true
       }
     });
 
@@ -149,7 +155,8 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
         role: true,
         avatar: true,
         isVerified: true,
-        createdAt: true
+        createdAt: true,
+        ownedOrganizations: true
       }
     });
 
@@ -189,7 +196,10 @@ export const googleLogin = async (req: Request, res: Response) => {
 
     // Find or create user
     let user = await prisma.user.findUnique({
-      where: { email }
+      where: { email },
+      include: {
+        ownedOrganizations: true
+      }
     });
 
     if (!user) {
@@ -206,6 +216,9 @@ export const googleLogin = async (req: Request, res: Response) => {
           avatar: picture || null,
           role: 'USER',
           isVerified: email_verified === 'true' || email_verified === true
+        },
+        include: {
+          ownedOrganizations: true
         }
       });
     }
@@ -222,7 +235,8 @@ export const googleLogin = async (req: Request, res: Response) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
-        avatar: user.avatar
+        avatar: user.avatar,
+        ownedOrganizations: user.ownedOrganizations || []
       }
     });
 

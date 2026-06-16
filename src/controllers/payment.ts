@@ -69,7 +69,7 @@ export const createOpayCashier = async (req: Request, res: Response) => {
           reference: orderId,
           returnUrl: `${frontendBase}/booking/success?orderId=${orderId}&status=success`,
           userInfo: {
-            userEmail: email || 'guest@eventify.com',
+            userEmail: email || 'guest@partystorm.com',
             userId: orderId,
             userMobile: '',
             userName: name || 'Guest User'
@@ -78,7 +78,7 @@ export const createOpayCashier = async (req: Request, res: Response) => {
 
         const signature = generateOpaySignature(payload, opayPrivateKey);
 
-        const response = await fetch('https://sandbox-paymentapi.opaycheckout.com/api/v1/international/cashier/create', {
+        const response = await fetch('https://sandboxapi.opaycheckout.com/api/v1/international/cashier/create', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -96,8 +96,8 @@ export const createOpayCashier = async (req: Request, res: Response) => {
         } else {
           console.warn('[OPay] Sandbox API returned non-success, falling back to mock cashier. Response:', JSON.stringify(data));
         }
-      } catch (opayErr) {
-        console.warn('[OPay] Failed to reach OPay sandbox, using mock cashier fallback:', opayErr);
+      } catch (opayErr: any) {
+        console.warn('[OPay] Failed to reach OPay sandbox, using mock cashier fallback:', opayErr?.message || opayErr);
       }
     } else {
       console.log('[OPay] Credentials not configured (OPAY_MERCHANT_ID / OPAY_PRIVATE_KEY missing). Using mock cashier.');
@@ -156,7 +156,7 @@ export const verifyOpayPayment = async (req: Request, res: Response) => {
 
     // Status query uses PublicKey in Authorization header (not signature)
     const queryPayload = { orderId };
-    const response = await fetch('https://sandbox-paymentapi.opaycheckout.com/api/v1/international/cashier/status/query', {
+    const response = await fetch('https://sandboxapi.opaycheckout.com/api/v1/international/cashier/status/query', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

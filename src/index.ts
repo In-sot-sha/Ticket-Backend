@@ -15,7 +15,7 @@ const app = express();
 // Allow requests from any origin in dev; restrict to your domain in production.
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000',`https://eventgo-frontend.vercel.app`];
+  : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000',`https://partystorm.vercel.app`];
 
 app.use(
   cors({
@@ -55,7 +55,7 @@ app.use('/api/', router);
 app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({
     status: 'OK',
-    message: 'Eventify API is running',
+    message: 'PartyStorm API is running',
     environment: process.env.NODE_ENV ?? 'development',
     timestamp: new Date().toISOString(),
   });

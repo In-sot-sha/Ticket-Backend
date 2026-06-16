@@ -1,7 +1,7 @@
 {
-  "name": "eventify-backend",
+  "name": "partystorm-backend",
   "version": "1.0.0",
-  "description": "Backend for Eventify event ticketing platform",
+  "description": "Backend for PartyStorm event ticketing platform",
   "main": "dist/index.js",
   "engines": {
     "node": "20.x"
@@ -23,7 +23,7 @@
     "ticketing",
     "platform"
   ],
-  "author": "Eventify",
+  "author": "PartyStorm",
   "license": "MIT",
   "dependencies": {
     "@prisma/client": "^4.16.2",

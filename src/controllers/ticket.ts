@@ -175,6 +175,26 @@ export const purchaseTicket = async (req: AuthenticatedRequest, res: Response) =
     // Generate a compact unique QR identifier (rendered client-side into a visual QR code)
     const qrIdentifier = `TKT-${ticketType.eventId}-${req.userId}-${ticketTypeId}-${Date.now()}`;
 
+    // Calculate fees
+    const price = ticketType.price || 0;
+    const platformFee = price > 0 ? price * 0.05 : 0;
+    const processingFee = price > 0 ? (price * 0.015) + 100 : 0;
+    const netAmount = price > 0 ? price - platformFee - processingFee : 0;
+
+    // Create an order first
+    const order = await prisma.order.create({
+      data: {
+        userId: req.userId,
+        eventId: ticketType.eventId,
+        totalAmount: price,
+        platformFee,
+        processingFee,
+        netAmount,
+        status: 'PAID', // simplified
+        purchaseType: 'ONLINE'
+      }
+    });
+
     // Create the ticket
     const ticket = await prisma.ticket.create({
       data: {
@@ -183,7 +203,8 @@ export const purchaseTicket = async (req: AuthenticatedRequest, res: Response) =
         ticketTypeId: Number(ticketTypeId),
         qrCode: qrIdentifier,
         status: 'VALID',
-        purchaseType: 'ONLINE'
+        purchaseType: 'ONLINE',
+        orderId: order.id
       },
       include: {
         event: {
@@ -435,12 +456,12 @@ export const requestTicketRecovery = async (req: Request, res: Response) => {
         });
 
         await transporter.sendMail({
-          from: `"Eventify Tickets" <${process.env.EMAIL_USER || 'no-reply@eventify.com'}>`,
+          from: `"PartyStorm Tickets" <${process.env.EMAIL_USER || 'no-reply@partystorm.com'}>`,
           to: contact,
           subject: 'Your Ticket Recovery Verification Code',
           text: `Your 6-digit verification code is: ${otp}. It expires in 10 minutes.`,
           html: `<div style="font-family: sans-serif; padding: 20px;">
-            <h2>Eventify Ticket Recovery</h2>
+            <h2>PartyStorm Ticket Recovery</h2>
             <p>Your 6-digit verification code is:</p>
             <h1 style="font-size: 32px; letter-spacing: 5px; color: #f43f5e; font-weight: 800;">${otp}</h1>
             <p>This code will expire in 10 minutes.</p>
@@ -568,14 +589,28 @@ export const checkoutGuest = async (req: Request, res: Response) => {
       });
     }
 
+    // Fetch ticket types to calculate prices
+    const ticketTypeIds = itemsToProcess.map((i: any) => Number(i.ticketTypeId));
+    const ticketTypes = await prisma.ticketType.findMany({
+      where: { id: { in: ticketTypeIds } }
+    });
+    
+    const typeMap = new Map();
+    ticketTypes.forEach(t => typeMap.set(t.id, t));
+
     // Generate tickets
-    const tickets = [];
+    const ticketsData: any[] = [];
     let counter = 0;
     for (const item of itemsToProcess) {
       const itemTypeId = Number(item.ticketTypeId);
       const itemQty = Number(item.quantity);
 
       if (isNaN(itemTypeId) || isNaN(itemQty) || itemQty <= 0) {
+        continue;
+      }
+      
+      const ticketType = typeMap.get(itemTypeId);
+      if (!ticketType) {
         continue;
       }
 
@@ -585,53 +620,77 @@ export const checkoutGuest = async (req: Request, res: Response) => {
         // This keeps the column size small and the data portable.
         const qrIdentifier = `TKT-${Number(eventId)}-${user.id}-${itemTypeId}-${Date.now()}-${counter++}`;
 
-        const ticket = await prisma.ticket.create({
-          data: {
-            eventId: Number(eventId),
-            userId: user.id,
-            ticketTypeId: itemTypeId,
-            qrCode: qrIdentifier,
-            status: 'VALID',
-            purchaseType: 'ONLINE'
-          },
-          include: {
-            event: {
-              select: {
-                id: true,
-                title: true,
-                startDate: true,
-                endDate: true,
-                location: true
-              }
-            },
-            ticketType: {
-              select: {
-                id: true,
-                name: true,
-                price: true
-              }
-            }
-          }
-        });
-
-        tickets.push(ticket);
-
-        // Record the purchase in TicketPurchase table
-        await prisma.ticketPurchase.create({
-          data: {
-            userId: user.id,
-            eventId: Number(eventId),
-            ticketTypeId: itemTypeId,
-            qrCode: qrIdentifier,
-            status: 'VALID',
-            purchaseType: 'ONLINE'
-          }
+        ticketsData.push({
+          eventId: Number(eventId),
+          userId: user.id,
+          ticketTypeId: itemTypeId,
+          qrCode: qrIdentifier,
+          status: 'VALID' as any,
+          purchaseType: 'ONLINE' as any
         });
       }
     }
 
-    if (tickets.length === 0) {
+    if (ticketsData.length === 0) {
       return res.status(400).json({ message: 'No valid ticket items were processed. Check ticketTypeId and quantity.' });
+    }
+
+    // Calculate total amount correctly from the fetched ticket types
+    let totalAmount = 0;
+    for (const item of items) {
+      const itemTypeId = Number(item.ticketTypeId);
+      const ticketType = typeMap.get(itemTypeId);
+      if (ticketType && ticketType.price > 0) {
+        totalAmount += ticketType.price * Number(item.quantity);
+      }
+    }
+
+    const platformFee = totalAmount > 0 ? totalAmount * 0.05 : 0;
+    const processingFee = totalAmount > 0 ? (totalAmount * 0.015) + 100 : 0;
+    const netAmount = totalAmount > 0 ? totalAmount - platformFee - processingFee : 0;
+
+    // Create the Order
+    const order = await prisma.order.create({
+      data: {
+        userId: user.id,
+        eventId: Number(eventId),
+        totalAmount,
+        platformFee,
+        processingFee,
+        netAmount,
+        status: 'PAID', // Assuming successful for guest checkout for now
+        purchaseType: 'ONLINE'
+      }
+    });
+
+    // Create tickets with orderId
+    const tickets = [];
+    for (const tData of ticketsData) {
+      const ticket = await prisma.ticket.create({
+        data: {
+          ...tData,
+          orderId: order.id
+        },
+        include: {
+          event: {
+            select: {
+              id: true,
+              title: true,
+              startDate: true,
+              endDate: true,
+              location: true
+            }
+          },
+          ticketType: {
+            select: {
+              id: true,
+              name: true,
+              price: true
+            }
+          }
+        }
+      });
+      tickets.push(ticket);
     }
 
     return res.status(201).json({

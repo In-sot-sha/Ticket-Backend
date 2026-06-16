@@ -1,6 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 
+// Load environment variables from .env if running locally
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
 const schemaPath = path.join(__dirname, '..', 'prisma', 'schema.prisma');
 let schema = fs.readFileSync(schemaPath, 'utf8');
 

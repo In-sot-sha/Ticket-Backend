@@ -183,7 +183,10 @@ export const getEvents = async (req: Request, res: Response) => {
         }
       },
       skip,
-      take: limitNum
+      take: limitNum,
+      orderBy: {
+        createdAt: 'desc'
+      }
     });
 
     const total = await prisma.event.count({ where: whereClause });

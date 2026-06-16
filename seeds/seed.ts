@@ -110,13 +110,12 @@ async function seedDatabase() {
   try {
     // Delete in sequence to avoid foreign key constraint errors
     await prisma.ticket.deleteMany({});
-    await prisma.ticketPurchase.deleteMany({});
+    await prisma.order.deleteMany({});
     await prisma.ticketType.deleteMany({});
     await prisma.vendorApplication.deleteMany({});
     await prisma.vendor.deleteMany({});
     await prisma.vendorType.deleteMany({});
-    await prisma.eventTagOnEvent.deleteMany({});
-    await prisma.eventTag.deleteMany({});
+
     await prisma.event.deleteMany({});
     await prisma.organizationMember.deleteMany({});
     await prisma.userOrganizationFollow.deleteMany({});
@@ -132,7 +131,7 @@ async function seedDatabase() {
     // 1. Create ADMIN
     await prisma.user.create({
       data: {
-        email: 'admin@eventify.com',
+        email: 'admin@partystorm.com',
         password: adminPassword,
         firstName: 'System',
         lastName: 'Admin',
@@ -151,11 +150,7 @@ async function seedDatabase() {
         lastName: 'Smith',
         role: 'ORGANIZER',
         phone: '+2348011223344',
-        isVerified: true,
-        isOrganizerVerified: true,
-        organizerBusinessName: 'Prime Events & Entertainment',
-        organizerDescription: 'Leading event planners in West Africa producing festivals, workshops, and business conferences.',
-        organizerContactInfo: 'hello@primeevents.com'
+        isVerified: true
       }
     });
 
@@ -262,7 +257,7 @@ async function seedDatabase() {
       } else if (i % 6 === 0) {
         locationType = 'hybrid';
         locationVal = locations[i % locations.length] || 'Ado Bayero Mall, Kano, Nigeria';
-        onlineUrlVal = 'https://youtube.com/live/eventify-live-' + i;
+        onlineUrlVal = 'https://youtube.com/live/partystorm-live-' + i;
       } else {
         locationVal = locations[i % locations.length] || 'Ado Bayero Mall, Kano, Nigeria';
       }
@@ -361,13 +356,24 @@ async function seedDatabase() {
         if (ticketTypes.length > 0) {
           const selectedType = ticketTypes[i % ticketTypes.length];
           if (selectedType) {
+            // Create an order first
+            const order = await prisma.order.create({
+              data: {
+                userId: regularUser.id,
+                eventId: event.id,
+                totalAmount: selectedType.price,
+                status: 'PAID',
+                purchaseType: 'ONLINE'
+              }
+            });
             // Create ticket purchase trace
             await prisma.ticket.create({
               data: {
                 eventId: event.id,
                 userId: regularUser.id,
                 ticketTypeId: selectedType.id,
-                qrCode: `eventify_ticket_seed_${event.id}_${selectedType.id}_${Date.now()}`,
+                orderId: order.id,
+                qrCode: `partystorm_ticket_seed_${event.id}_${selectedType.id}_${Date.now()}`,
                 status: i <= 8 ? 'USED' : 'VALID',
                 purchaseType: 'ONLINE'
               }

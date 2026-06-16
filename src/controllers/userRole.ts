@@ -5,7 +5,7 @@ import { prisma } from '../prisma';
 // Request to become an organizer
 export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
   try {
-    const { businessName, description, contactInfo } = req.body;
+    const { businessName, description, contactInfo, logo, socials } = req.body;
 
     // Check if user already has organizations
     const existingOrgs = await prisma.organization.count({
@@ -22,6 +22,8 @@ export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
         name: businessName,
         description: description,
         website: contactInfo,
+        logo: logo,
+        socials: socials,
         ownerId: req.userId!,
         isVerified: false // Set to false initially, requires admin verification
       }
@@ -47,7 +49,8 @@ export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
         email: true,
         firstName: true,
         lastName: true,
-        role: true
+        role: true,
+        ownedOrganizations: true
       }
     });
 
@@ -130,7 +133,21 @@ export const getOrganizerProfile = async (req: AuthRequest, res: Response) => {
 // Update organizer profile (organization details)
 export const updateOrganizerProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const { organizationId, businessName, description, contactInfo, } = req.body;
+    const { 
+      organizationId, 
+      businessName, 
+      description, 
+      contactInfo, 
+      logo, 
+      socials,
+      payoutBankName,
+      payoutAccountNumber,
+      payoutAccountName,
+      payoutSchedule,
+      taxId,
+      vatNumber,
+      businessAddress
+    } = req.body;
 
     // Check if user owns this organization
     const organization = await prisma.organization.findFirst({
@@ -150,7 +167,15 @@ export const updateOrganizerProfile = async (req: AuthRequest, res: Response) =>
         name: businessName || organization.name,
         description: description || organization.description,
         website: contactInfo || organization.website,
-        // phone: phone || organization.phone
+        logo: logo !== undefined ? logo : organization.logo,
+        socials: socials !== undefined ? socials : organization.socials,
+        payoutBankName: payoutBankName !== undefined ? payoutBankName : organization.payoutBankName,
+        payoutAccountNumber: payoutAccountNumber !== undefined ? payoutAccountNumber : organization.payoutAccountNumber,
+        payoutAccountName: payoutAccountName !== undefined ? payoutAccountName : organization.payoutAccountName,
+        payoutSchedule: payoutSchedule !== undefined ? payoutSchedule : organization.payoutSchedule,
+        taxId: taxId !== undefined ? taxId : organization.taxId,
+        vatNumber: vatNumber !== undefined ? vatNumber : organization.vatNumber,
+        businessAddress: businessAddress !== undefined ? businessAddress : organization.businessAddress
       }
     });
 
