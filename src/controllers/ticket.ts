@@ -596,7 +596,7 @@ export const checkoutGuest = async (req: Request, res: Response) => {
     });
     
     const typeMap = new Map();
-    ticketTypes.forEach(t => typeMap.set(t.id, t));
+    ticketTypes.forEach((t: any) => typeMap.set(t.id, t));
 
     // Generate tickets
     const ticketsData: any[] = [];
