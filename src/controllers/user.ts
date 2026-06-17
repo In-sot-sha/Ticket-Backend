@@ -74,9 +74,12 @@ export const login = async (req: Request, res: Response) => {
 
     }
 
+    if (!user.password) {
+      return res.status(400).json({ message: 'Please sign in with Google/Neon' });
+    }
+
     // Compare password
     const isMatch = await comparePassword(password, user.password);
-
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid email or password' });
     }
@@ -170,57 +173,104 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Google Auth Login/Register
+import * as jose from 'jose';
+
+const NEON_PROJECT_ID = process.env.NEON_PROJECT_ID;
+
+
+// Neon Auth Login/Register
 export const googleLogin = async (req: Request, res: Response) => {
   try {
     const { credential } = req.body;
 
     if (!credential) {
-      return res.status(400).json({ message: 'Google credential is required' });
+      return res.status(400).json({ message: 'Credential is required' });
     }
 
-    // Verify token with Google API
-    const googleVerifyUrl = `https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`;
-    const response = await fetch(googleVerifyUrl);
-    
-    if (!response.ok) {
-      return res.status(400).json({ message: 'Invalid Google credential token' });
+    // Decode just the payload to get the issuer (without verification)
+    const parts = credential.split('.');
+    if (parts.length !== 3) {
+      return res.status(400).json({ message: 'Invalid token format' });
+    }
+    const rawPayload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+    const iss = rawPayload.iss;
+
+    console.log('[neonLogin] Token iss:', iss);
+    console.log('[neonLogin] NEON_PROJECT_ID:', NEON_PROJECT_ID);
+
+    if (!iss) {
+      return res.status(400).json({ message: 'Token has no issuer' });
     }
 
-    const payload: any = await response.json();
-    const { email, given_name, family_name, picture, email_verified } = payload;
+    // Neon Auth JWKS lives at {base}/neondb/auth/.well-known/jwks.json
+    const baseUrl = iss.endsWith('/') ? iss.slice(0, -1) : iss;
+    const jwksUrl = new URL(`${baseUrl}/neondb/auth/.well-known/jwks.json`);
+    console.log('[neonLogin] JWKS URI:', jwksUrl.toString());
 
-    if (!email) {
-      return res.status(400).json({ message: 'Email not provided by Google account' });
+    const JWKS = jose.createRemoteJWKSet(jwksUrl);
+
+    let email, given_name, family_name, picture, email_verified, sub;
+
+    try {
+      const { payload: verifiedPayload } = await jose.jwtVerify(credential, JWKS);
+      
+      console.log('[neonLogin] ✅ Token verified! email:', verifiedPayload.email, 'sub:', verifiedPayload.sub);
+      email = verifiedPayload.email as string;
+      sub = verifiedPayload.sub;
+      const nameParts = ((verifiedPayload.name as string) || (verifiedPayload as any).raw_user_meta_data?.name || 'Google User').split(' ');
+      given_name = nameParts[0];
+      family_name = nameParts.slice(1).join(' ');
+      picture = (verifiedPayload.picture as string) || (verifiedPayload as any).raw_user_meta_data?.picture || null;
+      email_verified = Boolean(verifiedPayload.emailVerified);
+    } catch (err: any) {
+      console.error('[neonLogin] ❌ Verification failed:', err.message);
+      return res.status(400).json({ message: 'Invalid credential: ' + err.message });
     }
 
-    // Find or create user
+    if (!email || !sub) {
+      return res.status(400).json({ message: 'Email or identity not provided by Auth account' });
+    }
+
+    // Attempt to find by provider ID first
     let user = await prisma.user.findUnique({
-      where: { email },
-      include: {
-        ownedOrganizations: true
-      }
+      where: { authProviderId: sub },
+      include: { ownedOrganizations: true }
     });
 
     if (!user) {
-      // Create a new guest user with Google details
-      const randomPassword = Math.random().toString(36).slice(-10) + 'A1!';
-      const hashedPassword = await hashPassword(randomPassword);
-      
-      user = await prisma.user.create({
-        data: {
-          email,
-          password: hashedPassword,
-          firstName: given_name || 'Google',
-          lastName: family_name || 'User',
-          avatar: picture || null,
-          role: 'USER',
-          isVerified: email_verified === 'true' || email_verified === true
-        },
-        include: {
-          ownedOrganizations: true
-        }
+      // If not found by sub, check if local user exists with the same email
+      user = await prisma.user.findUnique({
+        where: { email },
+        include: { ownedOrganizations: true }
       });
+
+      if (user) {
+        // Link the existing local account to this Neon identity
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            authProvider: 'neon',
+            authProviderId: sub,
+            isVerified: user.isVerified || email_verified
+          },
+          include: { ownedOrganizations: true }
+        });
+      } else {
+        // Create a new user without a password
+        user = await prisma.user.create({
+          data: {
+            email,
+            firstName: given_name || 'Google',
+            lastName: family_name || 'User',
+            avatar: picture || null,
+            role: 'USER',
+            isVerified: email_verified,
+            authProvider: 'neon',
+            authProviderId: sub
+          },
+          include: { ownedOrganizations: true }
+        });
+      }
     }
 
     // Generate token
@@ -241,7 +291,7 @@ export const googleLogin = async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Google Auth error:', error);
-    return res.status(500).json({ message: 'Server error during Google login' });
+    console.error('Neon Auth error:', error);
+    return res.status(500).json({ message: 'Server error during login' });
   }
 };
