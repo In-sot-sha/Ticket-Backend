@@ -173,7 +173,7 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
   }
 };
 
-import * as jose from 'jose';
+
 
 const NEON_PROJECT_ID = process.env.NEON_PROJECT_ID;
 
@@ -207,6 +207,7 @@ export const googleLogin = async (req: Request, res: Response) => {
     const jwksUrl = new URL(`${baseUrl}/neondb/auth/.well-known/jwks.json`);
     console.log('[neonLogin] JWKS URI:', jwksUrl.toString());
 
+    const jose = await import('jose');
     const JWKS = jose.createRemoteJWKSet(jwksUrl);
 
     let email, given_name, family_name, picture, email_verified, sub;
