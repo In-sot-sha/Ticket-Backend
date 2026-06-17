@@ -2,11 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import { generateToken, AuthRequest } from '../middleware/auth';
 import { hashPassword, comparePassword } from '../utils/password';
+import * as jose from "jose";
 
-// Use a Function constructor to hide the dynamic import from TypeScript/Webpack
-// so it doesn't get transpiled into a require() statement.
-const _importDynamic = new Function('modulePath', 'return import(modulePath)');
-const josePromise = _importDynamic('jose');
 // Register a new user
 export const register = async (req: Request, res: Response) => {
   try {
@@ -199,9 +196,6 @@ export const googleLogin = async (req: Request, res: Response) => {
     const rawPayload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
     const iss = rawPayload.iss;
 
-    console.log('[neonLogin] Token iss:', iss);
-    console.log('[neonLogin] NEON_PROJECT_ID:', NEON_PROJECT_ID);
-
     if (!iss) {
       return res.status(400).json({ message: 'Token has no issuer' });
     }
@@ -209,8 +203,8 @@ export const googleLogin = async (req: Request, res: Response) => {
     // Neon Auth JWKS lives at {base}/neondb/auth/.well-known/jwks.json
     const baseUrl = iss.endsWith('/') ? iss.slice(0, -1) : iss;
     const jwksUrl = new URL(`${baseUrl}/neondb/auth/.well-known/jwks.json`);
-    console.log('[neonLogin] JWKS URI:', jwksUrl.toString());
-    const jose = await josePromise;
+
+
     const JWKS = jose.createRemoteJWKSet(jwksUrl);
 
     let email, given_name, family_name, picture, email_verified, sub;
@@ -218,7 +212,6 @@ export const googleLogin = async (req: Request, res: Response) => {
     try {
       const { payload: verifiedPayload } = await jose.jwtVerify(credential, JWKS);
       
-      console.log('[neonLogin] ✅ Token verified! email:', verifiedPayload.email, 'sub:', verifiedPayload.sub);
       email = verifiedPayload.email as string;
       sub = verifiedPayload.sub;
       const nameParts = ((verifiedPayload.name as string) || (verifiedPayload as any).raw_user_meta_data?.name || 'Google User').split(' ');
