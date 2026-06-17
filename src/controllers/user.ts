@@ -3,6 +3,10 @@ import { prisma } from '../prisma';
 import { generateToken, AuthRequest } from '../middleware/auth';
 import { hashPassword, comparePassword } from '../utils/password';
 
+// Use a Function constructor to hide the dynamic import from TypeScript/Webpack
+// so it doesn't get transpiled into a require() statement.
+const _importDynamic = new Function('modulePath', 'return import(modulePath)');
+const josePromise = _importDynamic('jose');
 // Register a new user
 export const register = async (req: Request, res: Response) => {
   try {
@@ -206,8 +210,7 @@ export const googleLogin = async (req: Request, res: Response) => {
     const baseUrl = iss.endsWith('/') ? iss.slice(0, -1) : iss;
     const jwksUrl = new URL(`${baseUrl}/neondb/auth/.well-known/jwks.json`);
     console.log('[neonLogin] JWKS URI:', jwksUrl.toString());
-
-    const jose = await import('jose');
+    const jose = await josePromise;
     const JWKS = jose.createRemoteJWKSet(jwksUrl);
 
     let email, given_name, family_name, picture, email_verified, sub;
