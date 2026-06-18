@@ -18,11 +18,12 @@ function localImageUrl(req: Request, filename: string): string {
 }
 
 /**
- * Upload an event image to Cloudinary when configured, otherwise keep it locally.
+ * Upload an image to Cloudinary when configured, otherwise keep it locally.
  */
-export async function uploadEventImage(
+export async function uploadImage(
   file: Express.Multer.File,
-  req: Request
+  req: Request,
+  folder: string
 ): Promise<string> {
   const absolutePath = path.isAbsolute(file.path)
     ? file.path
@@ -35,7 +36,7 @@ export async function uploadEventImage(
   if (isCloudinaryConfigured()) {
     try {
       const result = await cloudinary.uploader.upload(absolutePath, {
-        folder: 'event_images',
+        folder,
         use_filename: false,
         unique_filename: true,
         overwrite: false,
@@ -51,5 +52,41 @@ export async function uploadEventImage(
     console.warn('Cloudinary not configured — storing image locally.');
   }
 
+  const publicUploadsDir = path.join(process.cwd(), 'uploads');
+  if (!fs.existsSync(publicUploadsDir)) {
+    fs.mkdirSync(publicUploadsDir, { recursive: true });
+  }
+  const destPath = path.join(publicUploadsDir, file.filename);
+  fs.copyFileSync(absolutePath, destPath);
+  try {
+    fs.unlinkSync(absolutePath);
+  } catch {
+    // temp file may already be removed
+  }
+
   return localImageUrl(req, file.filename);
+}
+
+/**
+ * Upload an event image to Cloudinary when configured, otherwise keep it locally.
+ */
+export async function uploadEventImage(
+  file: Express.Multer.File,
+  req: Request
+): Promise<string> {
+  return uploadImage(file, req, 'event_images');
+}
+
+export async function uploadAvatarImage(
+  file: Express.Multer.File,
+  req: Request
+): Promise<string> {
+  return uploadImage(file, req, 'avatars');
+}
+
+export async function uploadOrgLogoImage(
+  file: Express.Multer.File,
+  req: Request
+): Promise<string> {
+  return uploadImage(file, req, 'org_logos');
 }

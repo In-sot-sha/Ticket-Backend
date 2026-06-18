@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { prisma } from '../prisma';
 import { generateToken, AuthRequest } from '../middleware/auth';
 import { hashPassword, comparePassword } from '../utils/password';
+import { uploadAvatarImage } from '../utils/imageUpload';
 
 // ── Register ──────────────────────────────────────────────────────────────────
 
@@ -94,6 +95,26 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const uploadAvatar = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No image file provided' });
+    }
+
+    const avatarUrl = await uploadAvatarImage(req.file, req);
+    const user = await prisma.user.update({
+      where: { id: req.userId! },
+      data: { avatar: avatarUrl },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true },
+    });
+
+    return res.json({ message: 'Avatar uploaded successfully', url: avatarUrl, user });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Failed to upload avatar' });
   }
 };
 

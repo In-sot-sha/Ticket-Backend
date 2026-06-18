@@ -48,6 +48,22 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum SupportTicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum SupportTicketCategory {
+  GENERAL
+  BILLING
+  TICKETS
+  HOSTING
+  TECHNICAL
+  OTHER
+}
+
 model User {
   id                    Int      @id @default(autoincrement())
   email                 String   @unique
@@ -75,6 +91,8 @@ model User {
   orders                 Order[]
   gatePinsCreated        GatePin[]                @relation("GatePinsCreated")
   errorLogs              ErrorLog[]               @relation("ErrorLogs")
+  supportTickets         SupportTicket[]
+  supportMessages        SupportTicketMessage[]
 }
 
 model Organization {
@@ -86,6 +104,8 @@ model Organization {
   socials     String?
   ownerId     Int // Foreign key to User (owner)
   isVerified  Boolean  @default(false)
+  rejectionReason String? @db.Text
+  rejectedAt    DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -349,3 +369,35 @@ model ErrorLog {
   @@index([resolved])
 }
 
+model SupportTicket {
+  id           Int                   @id @default(autoincrement())
+  userId       Int?
+  contactName  String?
+  contactEmail String
+  subject      String
+  category     SupportTicketCategory @default(GENERAL)
+  status       SupportTicketStatus   @default(OPEN)
+  priority     String                @default("normal")
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  user     User?                  @relation(fields: [userId], references: [id])
+  messages SupportTicketMessage[]
+
+  @@index([status])
+  @@index([userId])
+}
+
+model SupportTicketMessage {
+  id         Int      @id @default(autoincrement())
+  ticketId   Int
+  authorId   Int?
+  authorRole String   @default("USER")
+  body       String   @db.Text
+  createdAt  DateTime @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author User?         @relation(fields: [authorId], references: [id])
+
+  @@index([ticketId])
+}

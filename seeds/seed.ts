@@ -183,6 +183,19 @@ async function seedDatabase() {
       }
     });
 
+    // 5. Pending host applicant (for admin approval testing)
+    const pendingHostUser = await prisma.user.create({
+      data: {
+        email: 'hostapplicant@example.com',
+        password: defaultPassword,
+        firstName: 'Amina',
+        lastName: 'Yusuf',
+        role: 'ORGANIZER',
+        phone: '+2348123456789',
+        isVerified: true
+      }
+    });
+
     console.log('Seeding organizations...');
 
     // Create central seed Organization
@@ -203,6 +216,27 @@ async function seedDatabase() {
         userId: organizerUser.id,
         organizationId: organization.id,
         role: 'owner'
+      }
+    });
+
+    // Pending host application — admin can approve/reject in dashboard
+    const pendingOrg = await prisma.organization.create({
+      data: {
+        name: 'Lagos Nightlife Co',
+        description: 'We organize premium nightlife events, concerts, and private parties across Lagos.',
+        website: 'https://lagosnightlife.example.com',
+        logo: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?q=80&w=200',
+        socials: '@lagosnightlife',
+        ownerId: pendingHostUser.id,
+        isVerified: false,
+      }
+    });
+
+    await prisma.organizationMember.create({
+      data: {
+        userId: pendingHostUser.id,
+        organizationId: pendingOrg.id,
+        role: 'admin'
       }
     });
 

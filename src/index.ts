@@ -73,9 +73,14 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     else if (req.path.includes('/events')) {
       res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
     }
-    // User-specific data: no cache (private)
-    else if (req.path.includes('/profile') || req.path.includes('/user-roles')) {
-      res.set('Cache-Control', 'private, no-cache');
+    // User-specific / admin data: never cache
+    else if (
+      req.path.includes('/profile') ||
+      req.path.includes('/user-roles') ||
+      req.path.includes('/admin') ||
+      req.path.includes('/support')
+    ) {
+      res.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
     }
     // Default: 1-minute cache for other GET requests
     else {
