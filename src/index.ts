@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import * as dotenv from 'dotenv';
 import cors from 'cors';
+import compression from 'compression';
 import path from 'path';
 import fs from 'fs';
 
@@ -33,6 +34,18 @@ app.use(
   })
 );
 
+// ── Compression ───────────────────────────────────────────────────────────────
+// Gzip compress responses larger than 1KB (70-80% size reduction)
+app.use(compression({
+  level: 6, // Balanced compression level (0-9, 6 is default)
+  threshold: 1024, // Only compress responses > 1KB
+  filter: (req, res) => {
+    // Skip compression for requests with x-no-compression header
+    if (req.headers['x-no-compression']) return false;
+    return compression.filter(req, res);
+  },
+}));
+
 // ── Body parsers ──────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -47,6 +60,33 @@ try {
 } catch {
   // Silently skip on read-only filesystems (Vercel, etc.)
 }
+
+// ── HTTP Caching Headers ──────────────────────────────────────────────────────
+// Smart cache headers based on endpoint and HTTP method
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.method === 'GET') {
+    // Static/rarely-changing endpoints: 1-day cache
+    if (req.path.includes('/events/categories') || req.path.includes('/vendor-types')) {
+      res.set('Cache-Control', 'public, max-age=86400'); // 1 day
+    }
+    // Dynamic endpoints: 5-minute cache
+    else if (req.path.includes('/events')) {
+      res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
+    }
+    // User-specific data: no cache (private)
+    else if (req.path.includes('/profile') || req.path.includes('/user-roles')) {
+      res.set('Cache-Control', 'private, no-cache');
+    }
+    // Default: 1-minute cache for other GET requests
+    else {
+      res.set('Cache-Control', 'public, max-age=60');
+    }
+  } else {
+    // POST/PUT/DELETE: no cache
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+  next();
+});
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use('/api/', router);
