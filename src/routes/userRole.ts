@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { 
-  becomeOrganizer, 
+  becomeOrganizer,
+  uploadOrgLogo,
   becomeVendor, 
   getOrganizerProfile,
   updateOrganizerProfile,
@@ -8,11 +9,13 @@ import {
   getMyVendorApplications
 } from '../controllers/userRole';
 import { verifyToken } from '../middleware/auth';
+import { upload } from '../utils/upload';
 
 const router = Router();
 
 // Role transition endpoints
 router.post('/become-organizer', verifyToken, becomeOrganizer);
+router.post('/upload-logo', verifyToken, upload.single('logo'), uploadOrgLogo);
 router.post('/become-vendor', verifyToken, becomeVendor);
 
 // Organizer profile endpoints

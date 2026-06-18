@@ -63,6 +63,33 @@ export const verifyToken = async (req: AuthRequest, res: Response, next: NextFun
   }
 };
 
+// Attach user when a valid token is present; continue as guest otherwise
+export const optionalVerifyToken = async (req: AuthRequest, _res: Response, next: NextFunction) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) {
+      next();
+      return;
+    }
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      next();
+      return;
+    }
+
+    const decoded = jwt.verify(token, secret) as { userId: number; role: string };
+    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    if (user) {
+      req.userId = decoded.userId;
+      req.role = decoded.role;
+    }
+  } catch {
+    // Invalid token — treat as guest
+  }
+  next();
+};
+
 // Middleware to check user role
 export const requireRole = (...roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
