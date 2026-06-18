@@ -108,19 +108,22 @@ async function seedDatabase() {
   console.log('Clearing database tables...');
   
   try {
-    // Delete in sequence to avoid foreign key constraint errors
-    await prisma.ticket.deleteMany({});
-    await prisma.order.deleteMany({});
-    await prisma.ticketType.deleteMany({});
-    await prisma.vendorApplication.deleteMany({});
-    await prisma.vendor.deleteMany({});
-    await prisma.vendorType.deleteMany({});
-
-    await prisma.event.deleteMany({});
-    await prisma.organizationMember.deleteMany({});
-    await prisma.userOrganizationFollow.deleteMany({});
-    await prisma.organization.deleteMany({});
-    await prisma.user.deleteMany({});
+    // Delete in reverse order of creation to avoid foreign key constraint errors
+    // Only delete tables that exist in the current schema
+    try { await prisma.errorLog.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.gatePin.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.ticket.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.order.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.ticketType.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.vendorApplication.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.vendor.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.vendorType.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.payout.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.event.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.organizationMember.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.userOrganizationFollow.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.organization.deleteMany({}); } catch (e) { /* table may not exist */ }
+    try { await prisma.user.deleteMany({}); } catch (e) { /* table may not exist */ }
 
     console.log('Seeding user profiles...');
 

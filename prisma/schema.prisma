@@ -74,6 +74,7 @@ model User {
   vendorApplicationsMade VendorApplication[]      @relation("VendorApplicationsMade") // Applications this user has made
   orders                 Order[]
   gatePinsCreated        GatePin[]                @relation("GatePinsCreated")
+  errorLogs              ErrorLog[]               @relation("ErrorLogs")
 }
 
 model Organization {
@@ -325,3 +326,26 @@ model GatePin {
   @@unique([pin, organizationId]) // PINs unique per org
   @@index([organizationId])
 }
+
+// Error logs — tracks frontend crashes and errors
+model ErrorLog {
+  id        Int      @id @default(autoincrement())
+  message   String   // Error message
+  stack     String?  @db.LongText // Full stack trace
+  type      String   @default("ERROR") // ERROR, WARNING, etc.
+  severity  String   @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  userId    Int?     // User ID if logged in (nullable for anonymous errors)
+  userAgent String?  // Browser info
+  url       String?  // Page URL where error occurred
+  context   Json?    // Additional context (component, action, etc.)
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user      User?    @relation("ErrorLogs", fields: [userId], references: [id])
+
+  @@index([createdAt])
+  @@index([resolved])
+}
+
