@@ -78,7 +78,7 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
     ]);
 
     return res.json({
-      transactions: orders.map((o) => ({
+      transactions: orders.map((o: any) => ({
         id: o.id,
         totalAmount: o.totalAmount,
         platformFee: o.platformFee,
