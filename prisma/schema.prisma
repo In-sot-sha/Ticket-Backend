@@ -75,6 +75,7 @@ model User {
   phone                 String?
   role                  UserRole @default(USER)
   isVerified            Boolean  @default(false)
+  isGuest               Boolean  @default(false)
   avatar                String?
 
 
@@ -351,7 +352,7 @@ model GatePin {
 model ErrorLog {
   id        Int      @id @default(autoincrement())
   message   String   // Error message
-  stack     String?  @db.LongText // Full stack trace
+  stack     String?  @db.Text // Full stack trace
   type      String   @default("ERROR") // ERROR, WARNING, etc.
   severity  String   @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
   userId    Int?     // User ID if logged in (nullable for anonymous errors)

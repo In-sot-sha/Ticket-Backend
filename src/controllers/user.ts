@@ -6,6 +6,7 @@ import { prisma } from '../prisma';
 import { generateToken, AuthRequest } from '../middleware/auth';
 import { hashPassword, comparePassword } from '../utils/password';
 import { uploadAvatarImage } from '../utils/imageUpload';
+import { sendEmail, generateWelcomeEmail } from '../services/email';
 
 // ── Register ──────────────────────────────────────────────────────────────────
 
@@ -14,15 +15,58 @@ export const register = async (req: Request, res: Response) => {
     const { email, password, firstName, lastName, phone } = req.body;
 
     const existingUser = await prisma.user.findUnique({ where: { email } });
+    
     if (existingUser) {
-      res.status(400).json({ message: 'User with this email already exists' });
-      return;
+      // Check if existing user is a guest account that can be converted
+      if (existingUser.isGuest) {
+        // Convert guest account to full registered account
+        const hashedPassword = await hashPassword(password);
+        const updatedUser = await prisma.user.update({
+          where: { id: existingUser.id },
+          data: {
+            password: hashedPassword,
+            isGuest: false,
+            firstName: firstName || existingUser.firstName,
+            lastName: lastName || existingUser.lastName,
+            phone: phone || existingUser.phone,
+          },
+        });
+
+        // Send welcome email for converted guest account (fire-and-forget)
+        const welcomeTemplate = generateWelcomeEmail(updatedUser.firstName);
+        sendEmail({
+          to: updatedUser.email,
+          subject: welcomeTemplate.subject,
+          html: welcomeTemplate.html,
+          text: welcomeTemplate.text,
+        }).catch(err => console.error('[Register] Welcome email failed for converted guest:', err));
+
+        const token = generateToken(updatedUser.id, updatedUser.role);
+        return res.status(200).json({
+          message: 'Guest account converted to full account successfully',
+          token,
+          user: { id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName, role: updatedUser.role, ownedOrganizations: [] },
+        });
+      } else {
+        // Regular account exists, cannot register again
+        res.status(400).json({ message: 'User with this email already exists' });
+        return;
+      }
     }
 
     const hashedPassword = await hashPassword(password);
     const user = await prisma.user.create({
-      data: { email, password: hashedPassword, firstName, lastName, phone, role: 'USER' },
+      data: { email, password: hashedPassword, firstName, lastName, phone, role: 'USER', isGuest: false },
     });
+
+    // Send welcome email (fire-and-forget)
+    const welcomeTemplate = generateWelcomeEmail(user.firstName);
+    sendEmail({
+      to: user.email,
+      subject: welcomeTemplate.subject,
+      html: welcomeTemplate.html,
+      text: welcomeTemplate.text,
+    }).catch(err => console.error('[Register] Welcome email failed:', err));
 
     const token = generateToken(user.id, user.role);
     return res.status(201).json({
@@ -274,6 +318,9 @@ export const googleLogin = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Email or identity not provided' });
     }
 
+    // Track if this is a new user
+    let isNewUser = false;
+
     // Find or create the user
     let user = await prisma.user.findUnique({
       where: { authProviderId: sub },
@@ -299,7 +346,19 @@ export const googleLogin = async (req: Request, res: Response) => {
           data: { email, firstName: given_name, lastName: family_name, avatar: picture, role: 'USER', isVerified: emailVerified, authProvider: 'google', authProviderId: sub },
           include: { ownedOrganizations: true },
         });
+        isNewUser = true;
       }
+    }
+
+    // Send welcome email for new Google users (fire-and-forget)
+    if (isNewUser) {
+      const welcomeTemplate = generateWelcomeEmail(user.firstName);
+      sendEmail({
+        to: user.email,
+        subject: welcomeTemplate.subject,
+        html: welcomeTemplate.html,
+        text: welcomeTemplate.text,
+      }).catch(err => console.error('[GoogleLogin] Welcome email failed for new user:', err));
     }
 
     const token = generateToken(user.id, user.role);

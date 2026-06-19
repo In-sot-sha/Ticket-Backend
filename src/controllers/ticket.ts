@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import { hashPassword } from '../utils/password';
-import nodemailer from 'nodemailer';
+import { sendEmail, generateOTPEmail } from '../services/email';
+import { createOTP, verifyOTP, consumeOTP } from '../services/otp';
 
 // Extend the Express Request type to include userId
 interface AuthenticatedRequest extends Request {
@@ -436,47 +437,45 @@ export const requestTicketRecovery = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Email or phone number is required' });
     }
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-
-    otpStore.set(contact, { otp, expiresAt });
-
-    console.log(`[OTP] Generated verification code for ${contact}: ${otp}`);
-
-    // Try sending email if contact looks like an email or method is email
-    if (method === 'email' || contact.includes('@')) {
-      try {
-        const transporter = nodemailer.createTransport({
-          service: 'gmail',
-          auth: {
-            user: process.env.EMAIL_USER || '',
-            pass: process.env.EMAIL_PASS || ''
-          }
-        });
-
-        await transporter.sendMail({
-          from: `"PartyStorm Tickets" <${process.env.EMAIL_USER || 'no-reply@partystorm.com'}>`,
-          to: contact,
-          subject: 'Your Ticket Recovery Verification Code',
-          text: `Your 6-digit verification code is: ${otp}. It expires in 10 minutes.`,
-          html: `<div style="font-family: sans-serif; padding: 20px;">
-            <h2>PartyStorm Ticket Recovery</h2>
-            <p>Your 6-digit verification code is:</p>
-            <h1 style="font-size: 32px; letter-spacing: 5px; color: #f43f5e; font-weight: 800;">${otp}</h1>
-            <p>This code will expire in 10 minutes.</p>
-          </div>`
-        });
-        console.log(`[OTP] Email sent successfully to ${contact}`);
-      } catch (mailErr) {
-        console.warn(`[OTP] Failed to send email via SMTP, falling back to console delivery. Error:`, mailErr);
+    // Check if contact exists in database
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: contact },
+          { phone: contact }
+        ]
       }
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: 'No account found with this email or phone number.' });
+    }
+
+    // Generate OTP using the OTP service
+    const { code, expiresIn } = createOTP(contact);
+
+    // Send OTP email
+    if (method === 'email' || contact.includes('@')) {
+      const emailTemplate = generateOTPEmail(contact, code, expiresIn);
+      const sent = await sendEmail({
+        to: contact,
+        subject: emailTemplate.subject,
+        html: emailTemplate.html,
+        text: emailTemplate.text,
+      });
+
+      if (!sent) {
+        return res.status(500).json({ message: 'Failed to send verification code. Please try again.' });
+      }
+    } else {
+      // For SMS, we'd integrate with an SMS provider (Twilio, etc.)
+      console.log(`[Recovery] SMS would be sent to ${contact}: ${code}`);
     }
 
     return res.json({ message: 'Verification code sent successfully', contact });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error during OTP request' });
+  } catch (error: any) {
+    console.error('[Recovery] requestTicketRecovery error:', error);
+    return res.status(500).json({ message: 'Server error during recovery request.' });
   }
 };
 
@@ -485,27 +484,18 @@ export const verifyTicketRecovery = async (req: Request, res: Response) => {
     const { contact, code } = req.body;
 
     if (!contact || !code) {
-      return res.status(400).json({ message: 'Contact and verification code are required' });
+      return res.status(400).json({ message: 'Contact and verification code are required.' });
     }
 
-    const record = otpStore.get(contact);
+    // Verify OTP using the OTP service
+    const result = verifyOTP(contact, code);
 
-    if (!record) {
-      return res.status(400).json({ message: 'No verification request found' });
+    if (!result.valid) {
+      return res.status(400).json({ message: result.message });
     }
 
-    if (Date.now() > record.expiresAt) {
-      otpStore.delete(contact);
-      return res.status(400).json({ message: 'Verification code has expired' });
-    }
-
-    // Standard dev override or match
-    if (code !== record.otp && code !== '123456') { // Allow 123456 for testing simplicity
-      return res.status(400).json({ message: 'Invalid verification code' });
-    }
-
-    // Success - delete OTP
-    otpStore.delete(contact);
+    // Consume the OTP (remove from store)
+    consumeOTP(contact);
 
     // Look up user by email or phone
     const user = await prisma.user.findFirst({
@@ -518,7 +508,7 @@ export const verifyTicketRecovery = async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      return res.json({ tickets: [], message: 'No tickets found for this account' });
+      return res.json({ tickets: [], message: 'No account found.' });
     }
 
     // Find all tickets belonging to this user
@@ -546,9 +536,9 @@ export const verifyTicketRecovery = async (req: Request, res: Response) => {
     });
 
     return res.json({ tickets });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error during OTP verification' });
+  } catch (error: any) {
+    console.error('[Recovery] verifyTicketRecovery error:', error);
+    return res.status(500).json({ message: 'Server error during verification.' });
   }
 };
 
@@ -570,16 +560,16 @@ export const checkoutGuest = async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      const randomPassword = Math.random().toString(36).slice(-10) + 'A1!';
-      const hashedPassword = await hashPassword(randomPassword);
+      // Create guest user with NO password (password: null) and isGuest: true
       user = await prisma.user.create({
         data: {
           email,
-          password: hashedPassword,
+          password: null, // Guest accounts have no password
           firstName,
           lastName,
           phone: phone || null,
-          role: 'USER'
+          role: 'USER',
+          isGuest: true // Mark as guest account
         }
       });
     } else if (phone && !user.phone) {

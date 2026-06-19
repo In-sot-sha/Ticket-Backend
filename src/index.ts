@@ -9,6 +9,7 @@ import fs from 'fs';
 dotenv.config();
 
 import router from './routes';
+import { startOTPCleanupSchedule } from './services/otp';
 
 const app = express();
 
@@ -126,6 +127,10 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 // what Vercel uses.  Locally, we still call listen() so `npm run dev` works.
 if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
   const PORT = process.env.PORT ?? 33312;
+  
+  // Start OTP cleanup scheduler (runs every 5 minutes)
+  startOTPCleanupSchedule();
+  
   app.listen(PORT, () => {
     console.log(`✅  Server running on http://localhost:${PORT}`);
     console.log(`    Health: http://localhost:${PORT}/health`);

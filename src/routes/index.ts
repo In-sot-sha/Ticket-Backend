@@ -12,6 +12,7 @@ import gatePinRoutes from './gatePin'
 import errorLogRoutes from './errorLog'
 import adminRoutes from './admin'
 import supportRoutes from './support'
+import emailRoutes from './email'
 
 const router: Router = express.Router()
 
@@ -28,5 +29,6 @@ router.use("/gate-pins", gatePinRoutes);
 router.use("/errors", errorLogRoutes);
 router.use("/admin", adminRoutes);
 router.use("/support", supportRoutes);
+router.use("/emails", emailRoutes);
 
 export default router
