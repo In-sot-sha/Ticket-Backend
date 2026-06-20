@@ -9,7 +9,7 @@ import fs from 'fs';
 dotenv.config();
 
 import router from './routes';
-import { startOTPCleanupSchedule } from './services/otp';
+
 
 const app = express();
 
@@ -124,14 +124,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   res.status(status).json({ message });
 });
 
-// ── OTP Cleanup ───────────────────────────────────────────────────────────────
-// On Vercel (serverless), we can't use setInterval since each request is isolated.
-// Instead, we cleanup on-demand when OTP endpoints are called.
-// This is handled in the recovery controller.
-// if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
-//   // Local development: start periodic cleanup
-//   startOTPCleanupSchedule();
-// }
+
 
 // ── Local dev server ──────────────────────────────────────────────────────────
 // On Vercel this block is never reached — the `export default app` below is

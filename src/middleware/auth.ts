@@ -1,15 +1,13 @@
 import * as jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../prisma';
 
 export interface AuthRequest extends Request {
   userId?: number;
   role?: string;
   firstName?: string;
   lastName?: string;
-  user?: any; // This can be more specific based on your user model
+  user?: any;
 }
 
 // Generate JWT token
