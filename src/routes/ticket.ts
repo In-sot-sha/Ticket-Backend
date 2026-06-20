@@ -5,23 +5,21 @@ import {
   getTicketById, 
   validateTicket, 
   purchaseTicket,
-  requestTicketRecovery,
-  verifyTicketRecovery,
   checkoutGuest
 } from '../controllers/ticket';
-import { verifyToken } from '../middleware/auth';
+import { verifyToken, optionalVerifyToken } from '../middleware/auth';
 
 const router = Router();
 
-// Public routes
-router.get('/', getTickets);
-router.post('/recover/request', requestTicketRecovery);
-router.post('/recover/verify', verifyTicketRecovery);
+// Public routes (no authentication required)
 router.post('/checkout/guest', checkoutGuest);
-router.get('/:id', getTicketById);
 router.post('/validate', validateTicket); // For gate scanning
 
-// Protected routes
+// Semi-private: Can view your own tickets without auth, or if authenticated with userId param
+router.get('/', optionalVerifyToken, getTickets); // Now requires auth OR userId matches current user
+router.get('/:id', getTicketById);
+
+// Protected routes (authentication required)
 router.post('/purchase', verifyToken, purchaseTicket);
 router.post('/', verifyToken, createTicket); // For organizers to create tickets
 

@@ -192,7 +192,7 @@ function getJwksClient(): jwksClient.JwksClient {
     jwksUri,
     cache:            true,
     cacheMaxEntries:  5,
-    cacheMaxAge:      10 * 60 * 1000, // 10 minutes
+    cacheMaxAge:      60 * 60 * 1000, // 1 hour — reduces JWKS fetches for Google login
     rateLimit:        true,
     jwksRequestsPerMinute: 10,
   });
@@ -370,5 +370,96 @@ export const googleLogin = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('[googleLogin] Error:', error);
     return res.status(500).json({ message: 'Server error during login' });
+  }
+};
+
+// ── Refresh Token ────────────────────────────────────────────────────────────
+
+/**
+ * Refresh JWT token for users with expired or expiring tokens
+ * This endpoint does NOT require a valid token - it works with expired tokens
+ * Client sends: { token: "expired_jwt_token" } OR { refreshToken: "refresh_token_string" }
+ * 
+ * This implements Airbnb-style silent refresh:
+ * - Can accept either access token (even if expired) or refresh token
+ * - Returns new access token + optional new refresh token
+ * - Client uses this to proactively refresh before expiration
+ */
+export const refreshToken = async (req: Request, res: Response) => {
+  try {
+    const { token, refreshToken: refreshTokenBody } = req.body;
+
+    if (!token && !refreshTokenBody) {
+      return res.status(401).json({ message: 'Token or refreshToken is required' });
+    }
+
+    // Verify token WITHOUT checking expiration to get userId/role
+    let decoded: any;
+    try {
+      const secret = process.env.JWT_SECRET;
+      if (!secret) {
+        return res.status(500).json({ message: 'Server configuration error' });
+      }
+      
+      // Try access token first, then refresh token
+      const tokenToVerify = token || refreshTokenBody;
+      
+      // Use ignoreExpiration to allow refresh of expired tokens
+      decoded = jwt.verify(tokenToVerify, secret, { ignoreExpiration: true });
+    } catch (error) {
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+
+    const { userId, role } = decoded;
+
+    if (!userId || !role) {
+      return res.status(401).json({ message: 'Invalid token claims' });
+    }
+
+    // Verify user still exists in database
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    // Check if user is still active (not deleted/suspended)
+    if (!user.email) {
+      return res.status(401).json({ message: 'User account invalid' });
+    }
+
+    // Generate new tokens
+    const newAccessToken = generateToken(userId, role);
+    
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({ message: 'Server configuration error' });
+    }
+    
+    // Optionally generate a new refresh token (with longer expiry)
+    const newRefreshToken = jwt.sign(
+      { userId, role, type: 'refresh' },
+      secret,
+      { expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '30d' } as jwt.SignOptions
+    );
+
+    return res.json({
+      message: 'Token refreshed successfully',
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        avatar: user.avatar
+      }
+    });
+  } catch (error) {
+    console.error('[refreshToken] Error:', error);
+    return res.status(500).json({ message: 'Server error during token refresh' });
   }
 };

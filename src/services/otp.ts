@@ -1,21 +1,10 @@
 import crypto from 'crypto';
+import { prisma } from '../prisma';
 
 /**
  * OTP Service - Generate, store, and verify OTPs
- * Uses in-memory storage (replace with Redis for production)
+ * Uses database backend for reliability across restarts
  */
-
-interface OTPRecord {
-  code: string;
-  email: string;
-  createdAt: number;
-  expiresAt: number;
-  attempts: number;
-  verified: boolean;
-}
-
-// In-memory OTP storage (use Redis in production for scalability)
-const otpStore = new Map<string, OTPRecord>();
 
 const OTP_CONFIG = {
   LENGTH: 6,           // 6-digit OTP
@@ -40,127 +29,181 @@ export const generateOTP = (): string => {
 };
 
 /**
- * Create and store an OTP for an email
+ * Create and store an OTP in database for a contact (email/phone)
  */
-export const createOTP = (email: string): { code: string; expiresIn: number } => {
+export const createOTP = async (contact: string): Promise<{ code: string; expiresIn: number }> => {
   const code = generateOTP();
-  const now = Date.now();
-  const expiresAt = now + OTP_CONFIG.EXPIRY_MINUTES * 60 * 1000;
+  const expiresAt = new Date(Date.now() + OTP_CONFIG.EXPIRY_MINUTES * 60 * 1000);
 
-  otpStore.set(email, {
-    code,
-    email,
-    createdAt: now,
-    expiresAt,
-    attempts: 0,
-    verified: false,
-  });
+  try {
+    // Delete any existing OTP for this contact
+    await prisma.otp.deleteMany({
+      where: { contact }
+    });
 
-  console.log(`[OTP] Generated OTP for ${email}: ${code} (expires in ${OTP_CONFIG.EXPIRY_MINUTES} min)`);
+    // Create new OTP
+    await prisma.otp.create({
+      data: {
+        contact,
+        code,
+        expiresAt,
+        attempts: 0,
+        verified: false
+      }
+    });
 
-  return {
-    code,
-    expiresIn: OTP_CONFIG.EXPIRY_MINUTES,
-  };
+    console.log(`[OTP] Generated OTP for ${contact}: ${code} (expires in ${OTP_CONFIG.EXPIRY_MINUTES} min)`);
+
+    return {
+      code,
+      expiresIn: OTP_CONFIG.EXPIRY_MINUTES,
+    };
+  } catch (error) {
+    console.error('[OTP] Error creating OTP:', error);
+    throw new Error('Failed to create OTP');
+  }
 };
 
 /**
- * Verify an OTP code for an email
+ * Verify an OTP code for a contact
  */
-export const verifyOTP = (email: string, code: string): { valid: boolean; message: string } => {
-  const record = otpStore.get(email);
+export const verifyOTP = async (contact: string, code: string): Promise<{ valid: boolean; message: string }> => {
+  try {
+    const record = await prisma.otp.findUnique({
+      where: { contact }
+    });
 
-  if (!record) {
+    if (!record) {
+      return {
+        valid: false,
+        message: 'No OTP found. Please request a new one.',
+      };
+    }
+
+    if (new Date() > record.expiresAt) {
+      // Delete expired OTP
+      await prisma.otp.delete({ where: { contact } });
+      return {
+        valid: false,
+        message: 'OTP has expired. Please request a new one.',
+      };
+    }
+
+    if (record.attempts >= OTP_CONFIG.MAX_ATTEMPTS) {
+      // Delete after max attempts
+      await prisma.otp.delete({ where: { contact } });
+      return {
+        valid: false,
+        message: 'Too many failed attempts. Please request a new OTP.',
+      };
+    }
+
+    if (record.code !== code) {
+      // Increment attempts
+      await prisma.otp.update({
+        where: { contact },
+        data: { attempts: { increment: 1 } }
+      });
+      return {
+        valid: false,
+        message: `Invalid OTP. ${OTP_CONFIG.MAX_ATTEMPTS - record.attempts - 1} attempts remaining.`,
+      };
+    }
+
+    // OTP is valid - mark as verified
+    await prisma.otp.update({
+      where: { contact },
+      data: { verified: true }
+    });
+
+    console.log(`[OTP] ✅ OTP verified for ${contact}`);
+
+    return {
+      valid: true,
+      message: 'OTP verified successfully.',
+    };
+  } catch (error) {
+    console.error('[OTP] Error verifying OTP:', error);
     return {
       valid: false,
-      message: 'No OTP found. Please request a new one.',
+      message: 'Error verifying OTP. Please try again.',
     };
   }
-
-  if (Date.now() > record.expiresAt) {
-    otpStore.delete(email);
-    return {
-      valid: false,
-      message: 'OTP has expired. Please request a new one.',
-    };
-  }
-
-  if (record.attempts >= OTP_CONFIG.MAX_ATTEMPTS) {
-    otpStore.delete(email);
-    return {
-      valid: false,
-      message: 'Too many failed attempts. Please request a new OTP.',
-    };
-  }
-
-  if (record.code !== code) {
-    record.attempts++;
-    return {
-      valid: false,
-      message: `Invalid OTP. ${OTP_CONFIG.MAX_ATTEMPTS - record.attempts} attempts remaining.`,
-    };
-  }
-
-  // OTP is valid
-  record.verified = true;
-  console.log(`[OTP] ✅ OTP verified for ${email}`);
-
-  return {
-    valid: true,
-    message: 'OTP verified successfully.',
-  };
 };
 
 /**
- * Check if an email has a verified OTP (useful before creating account)
+ * Check if a contact has a verified OTP
  */
-export const isOTPVerified = (email: string): boolean => {
-  const record = otpStore.get(email);
-  return record?.verified ?? false;
+export const isOTPVerified = async (contact: string): Promise<boolean> => {
+  try {
+    const record = await prisma.otp.findUnique({
+      where: { contact }
+    });
+    return record?.verified ?? false;
+  } catch (error) {
+    console.error('[OTP] Error checking OTP verification:', error);
+    return false;
+  }
 };
 
 /**
- * Mark an OTP as used (remove from store after successful signup)
+ * Consume (delete) an OTP after successful use
  */
-export const consumeOTP = (email: string): void => {
-  otpStore.delete(email);
-  console.log(`[OTP] OTP consumed for ${email}`);
+export const consumeOTP = async (contact: string): Promise<void> => {
+  try {
+    await prisma.otp.deleteMany({
+      where: { contact }
+    });
+    console.log(`[OTP] OTP consumed for ${contact}`);
+  } catch (error) {
+    console.error('[OTP] Error consuming OTP:', error);
+  }
 };
 
 /**
  * Get OTP record details (for debugging)
  */
-export const getOTPRecord = (email: string): OTPRecord | null => {
-  return otpStore.get(email) ?? null;
+export const getOTPRecord = async (contact: string) => {
+  try {
+    return await prisma.otp.findUnique({
+      where: { contact }
+    });
+  } catch (error) {
+    console.error('[OTP] Error getting OTP record:', error);
+    return null;
+  }
 };
 
 /**
- * Cleanup expired OTPs (run periodically)
+ * Cleanup expired OTPs from database
  */
-export const cleanupExpiredOTPs = (): number => {
-  let cleaned = 0;
-  const now = Date.now();
+export const cleanupExpiredOTPs = async (): Promise<number> => {
+  try {
+    const result = await prisma.otp.deleteMany({
+      where: {
+        expiresAt: {
+          lt: new Date()
+        }
+      }
+    });
 
-  for (const [email, record] of otpStore.entries()) {
-    if (now > record.expiresAt) {
-      otpStore.delete(email);
-      cleaned++;
+    if (result.count > 0) {
+      console.log(`[OTP] Cleaned up ${result.count} expired OTPs`);
     }
-  }
 
-  if (cleaned > 0) {
-    console.log(`[OTP] Cleaned up ${cleaned} expired OTPs`);
+    return result.count;
+  } catch (error) {
+    console.error('[OTP] Error cleaning up expired OTPs:', error);
+    return 0;
   }
-
-  return cleaned;
 };
 
 /**
  * Start periodic cleanup (run every 5 minutes)
  */
 export const startOTPCleanupSchedule = () => {
-  setInterval(() => {
-    cleanupExpiredOTPs();
+  setInterval(async () => {
+    await cleanupExpiredOTPs();
   }, 5 * 60 * 1000);
 
   console.log('[OTP] Cleanup scheduler started (runs every 5 minutes)');

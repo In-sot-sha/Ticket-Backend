@@ -26,8 +26,8 @@ export const sendOTP = async (req: Request, res: Response) => {
       return res.status(409).json({ message: 'Email already registered. Please log in.' });
     }
 
-    // Generate OTP
-    const { code, expiresIn } = createOTP(email);
+    // Generate OTP (now async)
+    const { code, expiresIn } = await createOTP(email);
 
     // Send OTP email
     const emailTemplate = generateOTPEmail(email, code, expiresIn);
@@ -65,8 +65,8 @@ export const verifyEmailOTP = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Valid 6-digit OTP is required.' });
     }
 
-    // Verify the OTP
-    const result = verifyOTP(email, code);
+    // Verify the OTP (now async)
+    const result = await verifyOTP(email, code);
 
     if (!result.valid) {
       return res.status(400).json({ message: result.message });

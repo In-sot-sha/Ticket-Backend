@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { verifyToken } from '../middleware/auth';
+import { pinVerifyRateLimit } from '../middleware/rateLimit';
 import {
   createGatePin,
   listGatePins,
@@ -9,8 +10,8 @@ import {
 
 const router = Router();
 
-// Public — gate staff verify their PIN before scanning
-router.post('/verify', verifyGatePin);
+// Public with rate limiting — gate staff verify their PIN before scanning
+router.post('/verify', pinVerifyRateLimit, verifyGatePin);
 
 // Protected — organiser manages PINs
 router.get('/',     verifyToken, listGatePins);

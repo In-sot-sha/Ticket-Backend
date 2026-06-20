@@ -1,707 +1,507 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { prisma } from '../prisma';
-import { hashPassword } from '../utils/password';
+import { AuthRequest } from '../middleware/auth';
+import { isValidEmail, isValidName, isValidPhone, sanitizeString } from '../utils/validation';
+import { createOTP, verifyOTP, consumeOTP, cleanupExpiredOTPs } from '../services/otp';
 import { sendEmail, generateOTPEmail } from '../services/email';
-import { createOTP, verifyOTP, consumeOTP } from '../services/otp';
 
-// Extend the Express Request type to include userId
-interface AuthenticatedRequest extends Request {
-  userId?: number;
-}
-
-// Get all tickets (filtered by user or event)
-export const getTickets = async (req: Request, res: Response) => {
+/**
+ * Get all tickets for the authenticated user
+ * Users can only see their own tickets unless they're admins
+ * Admins can see all tickets
+ */
+export const getTickets = async (req: AuthRequest, res: Response) => {
   try {
-    const { userId, eventId } = req.query;
-
-    const whereClause: any = {};
-
-    // Validate and sanitize query parameters
-    if (userId) {
-      const userIdNum = Number(userId);
-      if (isNaN(userIdNum)) {
-        return res.status(400).json({ message: 'Invalid userId provided' });
-      }
-      whereClause.userId = userIdNum;
+    // Require authentication
+    if (!req.userId) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
     }
 
-    if (eventId) {
-      const eventIdNum = Number(eventId);
-      if (isNaN(eventIdNum)) {
-        return res.status(400).json({ message: 'Invalid eventId provided' });
-      }
-      whereClause.eventId = eventIdNum;
+    let tickets;
+
+    // Admins can see all tickets
+    if (req.role === 'ADMIN') {
+      tickets = await prisma.ticket.findMany({
+        include: {
+          event: true,
+          user: true,
+          ticketType: true,
+        },
+      });
+    } else {
+      // Regular users can only see their own tickets
+      tickets = await prisma.ticket.findMany({
+        where: {
+          userId: req.userId,
+        },
+        include: {
+          event: true,
+          user: true,
+          ticketType: true,
+        },
+      });
     }
 
-    const tickets = await prisma.ticket.findMany({
-      where: whereClause,
-      include: {
-        event: {
-          select: {
-            id: true,
-            title: true,
-            startDate: true,
-            endDate: true,
-            location: true,
-            imageUrl: true,
-          }
-        },
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true
-          }
-        },
-        ticketType: {
-          select: {
-            id: true,
-            name: true,
-            price: true,
-            ticketStyle: true,
-            accentColor: true,
-            badgeText: true,
-          }
-        }
-      }
-    });
-
-    return res.json(tickets);
+    res.status(200).json(tickets);
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error' });
+    console.error('Error fetching tickets:', error);
+    res.status(500).json({ message: 'Error fetching tickets' });
   }
 };
 
-// Get ticket by ID
-export const getTicketById = async (req: Request, res: Response) => {
+/**
+ * Get a specific ticket by ID
+ */
+export const getTicketById = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Validate ticket ID
-    const ticketId = Number(id);
-    if (isNaN(ticketId) || ticketId <= 0) {
-      return res.status(400).json({ message: 'Valid ticket ID is required' });
-    }
-
     const ticket = await prisma.ticket.findUnique({
-      where: { id: ticketId },
+      where: { id: parseInt(id) },
       include: {
-        event: {
-          select: {
-            id: true,
-            title: true,
-            startDate: true,
-            endDate: true,
-            location: true
-          }
-        },
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true
-          }
-        },
-        ticketType: {
-          select: {
-            id: true,
-            name: true,
-            price: true,
-            ticketStyle: true,
-            accentColor: true,
-            badgeText: true,
-          }
-        }
-      }
+        event: true,
+        user: true,
+        ticketType: true,
+      },
     });
 
     if (!ticket) {
-      return res.status(404).json({ message: 'Ticket not found' });
+      res.status(404).json({ message: 'Ticket not found' });
+      return;
     }
 
-    return res.json(ticket);
+    res.status(200).json(ticket);
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error' });
+    console.error('Error fetching ticket:', error);
+    res.status(500).json({ message: 'Error fetching ticket' });
   }
 };
 
-// Purchase a ticket
-export const purchaseTicket = async (req: AuthenticatedRequest, res: Response) => {
+/**
+ * Purchase a ticket
+ */
+export const purchaseTicket = async (req: AuthRequest, res: Response) => {
   try {
-    // Verify user is authenticated
-    if (!req.userId) {
-      return res.status(401).json({ message: 'Authentication required' });
+    const { eventId, ticketTypeId, quantity } = req.body;
+
+    // Validate required fields
+    if (!eventId || !ticketTypeId || !quantity) {
+      res.status(400).json({ message: 'Missing required fields' });
+      return;
     }
 
-    const { ticketTypeId } = req.body;
-
-    // Validate input
-    if (!ticketTypeId || isNaN(Number(ticketTypeId))) {
-      return res.status(400).json({ message: 'Valid ticketTypeId is required' });
-    }
-
-    // Get the ticket type to ensure it exists and has available quantity
-    const ticketType = await prisma.ticketType.findUnique({
-      where: { id: Number(ticketTypeId) },
-      include: {
-        event: true
-      }
-    });
-
-    if (!ticketType) {
-      return res.status(404).json({ message: 'Ticket type not found' });
-    }
-
-    // Check if the event is still available (hasn't started yet)
-    if (new Date() > ticketType.event.startDate) {
-      return res.status(400).json({ message: 'Event has already started or ended' });
-    }
-
-    // Check if there are available tickets of this type
-    if (ticketType.quantity !== null) { // If quantity is set (not unlimited)
-      const purchasedTicketsCount = await prisma.ticket.count({
-        where: {
-          ticketTypeId: Number(ticketTypeId),
-          status: { in: ['VALID', 'USED'] } // Count only valid and used tickets
-        }
-      });
-
-      if (purchasedTicketsCount >= ticketType.quantity) {
-        return res.status(400).json({ message: 'No more tickets available for this type' });
-      }
-    }
-
-    // Generate a compact unique QR identifier (rendered client-side into a visual QR code)
-    const qrIdentifier = `TKT-${ticketType.eventId}-${req.userId}-${ticketTypeId}-${Date.now()}`;
-
-    // Calculate fees
-    const price = ticketType.price || 0;
-    const platformFee = price > 0 ? price * 0.05 : 0;
-    const processingFee = price > 0 ? (price * 0.015) + 100 : 0;
-    const netAmount = price > 0 ? price - platformFee - processingFee : 0;
-
-    // Create an order first
-    const order = await prisma.order.create({
-      data: {
-        userId: req.userId,
-        eventId: ticketType.eventId,
-        totalAmount: price,
-        platformFee,
-        processingFee,
-        netAmount,
-        status: 'PAID', // simplified
-        purchaseType: 'ONLINE'
-      }
-    });
-
-    // Create the ticket
-    const ticket = await prisma.ticket.create({
-      data: {
-        eventId: ticketType.eventId,
-        userId: req.userId,
-        ticketTypeId: Number(ticketTypeId),
-        qrCode: qrIdentifier,
-        status: 'VALID',
-        purchaseType: 'ONLINE',
-        orderId: order.id
-      },
-      include: {
-        event: {
-          select: {
-            id: true,
-            title: true,
-            startDate: true,
-            endDate: true,
-            location: true
-          }
-        },
-        ticketType: {
-          select: {
-            id: true,
-            name: true,
-            price: true
-          }
-        }
-      }
-    });
-
-    return res.status(201).json({
-      message: 'Ticket purchased successfully',
-      ticket
-    });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error' });
-  }
-};
-
-// Create ticket (for organizers to generate tickets)
-export const createTicket = async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    // Verify user is authenticated
-    if (!req.userId) {
-      return res.status(401).json({ message: 'Authentication required' });
-    }
-
-    const { eventId, userId, ticketTypeId, status = 'VALID' } = req.body;
-
-    // Validate input
-    if (!eventId || isNaN(Number(eventId)) || !ticketTypeId || isNaN(Number(ticketTypeId))) {
-      return res.status(400).json({ message: 'Valid eventId and ticketTypeId are required' });
-    }
-
-    // Additional validation for userId if provided
-    if (userId && isNaN(Number(userId))) {
-      return res.status(400).json({ message: 'Invalid userId provided' });
-    }
-
-    // Validate status if provided
-    const validStatuses = ['VALID', 'USED', 'CANCELLED'];
-    if (status && !validStatuses.includes(status)) {
-      return res.status(400).json({ message: 'Invalid status. Must be one of VALID, USED, CANCELLED' });
-    }
-
-    // Check if the user is the organizer of the event (through organization)
     const event = await prisma.event.findUnique({
-      where: { id: Number(eventId) },
-      include: {
-        organization: {
-          select: {
-            ownerId: true,
-            members: {
-              select: {
-                userId: true
-              }
-            }
-          }
-        }
-      }
+      where: { id: eventId },
     });
 
     if (!event) {
-      return res.status(404).json({ message: 'Event not found' });
+      res.status(404).json({ message: 'Event not found' });
+      return;
     }
 
-    // Check if user is the organization owner or member
-    // const isOrgOwner = event.organization.ownerId === req.userId;
-    // const isOrgMember = event.organization.members.some(member => member.userId === req.userId);
-    
-    // if (!isOrgOwner && !isOrgMember) {
-    //   return res.status(403).json({ message: 'You do not have permission to create tickets for this event' });
-    // }
-
-    // Generate a compact unique QR identifier (rendered client-side into a visual QR code)
-    const qrIdentifier = `TKT-${Number(eventId)}-${userId || 'gate'}-${Number(ticketTypeId)}-${Date.now()}`;
-
-    const ticket = await prisma.ticket.create({
-      data: {
-        eventId: Number(eventId),
-        userId: userId ? Number(userId) : null,
-        ticketTypeId: Number(ticketTypeId),
-        qrCode: qrIdentifier,
-        status,
-        purchaseType: 'GATE'
-      }
+    const ticketType = await prisma.ticketType.findUnique({
+      where: { id: ticketTypeId },
     });
 
-    return res.status(201).json({
-      message: 'Ticket created successfully',
-      ticket
-    });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error' });
-  }
-};
-
-// Validate ticket (for gate scanning)
-export const validateTicket = async (req: Request, res: Response) => {
-  try {
-    const { qrCode } = req.body;
-
-    if (!qrCode) {
-      return res.status(400).json({ message: 'QR code is required' });
+    if (!ticketType) {
+      res.status(404).json({ message: 'Ticket type not found' });
+      return;
     }
 
-    // Find ticket by QR code
-    // The qrCode parameter could be either:
-    // 1. The exact data URL that was stored
-    // 2. Just the unique identifier contained in the QR code
-    let ticket = await prisma.ticket.findFirst({
-      where: { 
-        qrCode: qrCode // Try exact match first
-      },
-      include: {
-        event: {
-          select: {
-            id: true,
-            title: true,
-            startDate: true,
-            endDate: true
-          }
-        },
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true
-          }
-        }
-      }
-    });
-
-    // If exact match fails, try to find by looking for the unique ID within the QR data
-    if (!ticket) {
-      ticket = await prisma.ticket.findFirst({
-        where: { 
-          qrCode: { contains: qrCode.replace('ticket_', '') } // Remove prefix if scanning the encoded content
-        },
-        include: {
-          event: {
-            select: {
-              id: true,
-              title: true,
-              startDate: true,
-              endDate: true
-            }
-          },
-          user: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true
-            }
-          }
-        }
-      });
-    }
-
-    if (!ticket) {
-      return res.status(404).json({ message: 'Invalid QR code' });
-    }
-
-    // Check if ticket is valid
-    if (ticket.status !== 'VALID') {
-      return res.status(400).json({ 
-        message: 'Ticket is not valid', 
-        status: ticket.status 
-      });
-    }
-
-    // Check if event has ended
-    if (new Date() > new Date(ticket.event.endDate)) {
-      // Update ticket status to indicate it was checked after event ended
-      await prisma.ticket.update({
-        where: { id: ticket.id },
-        data: { status: 'USED' } // Mark as used even though it's after event
-      });
-      
-      return res.status(400).json({ 
-        message: 'Event has already ended', 
-        status: 'EVENT_ENDED' 
-      });
-    }
-
-    // Update ticket status to used
-    await prisma.ticket.update({
-      where: { id: ticket.id },
-      data: { status: 'USED' }
-    });
-
-    return res.json({
-      message: 'Ticket validated successfully',
-      ticket: {
-        id: ticket.id,
-        eventId: ticket.eventId,
-        userId: ticket.userId,
-        event: ticket.event,
-        user: ticket.user
-      }
-    });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error' });
-  }
-};
-
-// In-memory OTP store
-const otpStore = new Map<string, { otp: string; expiresAt: number }>();
-
-export const requestTicketRecovery = async (req: Request, res: Response) => {
-  try {
-    const { contact, method } = req.body;
-
-    if (!contact) {
-      return res.status(400).json({ message: 'Email or phone number is required' });
-    }
-
-    // Check if contact exists in database
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: contact },
-          { phone: contact }
-        ]
-      }
-    });
-
-    if (!user) {
-      return res.status(404).json({ message: 'No account found with this email or phone number.' });
-    }
-
-    // Generate OTP using the OTP service
-    const { code, expiresIn } = createOTP(contact);
-
-    // Send OTP email
-    if (method === 'email' || contact.includes('@')) {
-      const emailTemplate = generateOTPEmail(contact, code, expiresIn);
-      const sent = await sendEmail({
-        to: contact,
-        subject: emailTemplate.subject,
-        html: emailTemplate.html,
-        text: emailTemplate.text,
-      });
-
-      if (!sent) {
-        return res.status(500).json({ message: 'Failed to send verification code. Please try again.' });
-      }
-    } else {
-      // For SMS, we'd integrate with an SMS provider (Twilio, etc.)
-      console.log(`[Recovery] SMS would be sent to ${contact}: ${code}`);
-    }
-
-    return res.json({ message: 'Verification code sent successfully', contact });
-  } catch (error: any) {
-    console.error('[Recovery] requestTicketRecovery error:', error);
-    return res.status(500).json({ message: 'Server error during recovery request.' });
-  }
-};
-
-export const verifyTicketRecovery = async (req: Request, res: Response) => {
-  try {
-    const { contact, code } = req.body;
-
-    if (!contact || !code) {
-      return res.status(400).json({ message: 'Contact and verification code are required.' });
-    }
-
-    // Verify OTP using the OTP service
-    const result = verifyOTP(contact, code);
-
-    if (!result.valid) {
-      return res.status(400).json({ message: result.message });
-    }
-
-    // Consume the OTP (remove from store)
-    consumeOTP(contact);
-
-    // Look up user by email or phone
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: contact },
-          { phone: contact }
-        ]
-      }
-    });
-
-    if (!user) {
-      return res.json({ tickets: [], message: 'No account found.' });
-    }
-
-    // Find all tickets belonging to this user
-    const tickets = await prisma.ticket.findMany({
-      where: { userId: user.id },
-      include: {
-        event: {
-          select: {
-            id: true,
-            title: true,
-            startDate: true,
-            endDate: true,
-            location: true,
-            imageUrl: true
-          }
-        },
-        ticketType: {
-          select: {
-            id: true,
-            name: true,
-            price: true
-          }
-        }
-      }
-    });
-
-    return res.json({ tickets });
-  } catch (error: any) {
-    console.error('[Recovery] verifyTicketRecovery error:', error);
-    return res.status(500).json({ message: 'Server error during verification.' });
-  }
-};
-
-export const checkoutGuest = async (req: Request, res: Response) => {
-  try {
-    const { firstName, lastName, email, phone, eventId, ticketTypeId, quantity, items } = req.body;
-
-    // We need either items array or the singular ticketTypeId + quantity pair
-    const hasItems = Array.isArray(items) && items.length > 0;
-    if (!email || !firstName || !lastName || !eventId || (!hasItems && (!ticketTypeId || !quantity))) {
-      return res.status(400).json({ message: 'Missing required reservation fields' });
-    }
-
-    const itemsToProcess = hasItems ? items : [{ ticketTypeId, quantity }];
-
-    // Find or create guest user
-    let user = await prisma.user.findUnique({
-      where: { email }
-    });
-
-    if (!user) {
-      // Create guest user with NO password (password: null) and isGuest: true
-      user = await prisma.user.create({
-        data: {
-          email,
-          password: null, // Guest accounts have no password
-          firstName,
-          lastName,
-          phone: phone || null,
-          role: 'USER',
-          isGuest: true // Mark as guest account
-        }
-      });
-    } else if (phone && !user.phone) {
-      user = await prisma.user.update({
-        where: { id: user.id },
-        data: { phone }
-      });
-    }
-
-    // Fetch ticket types to calculate prices
-    const ticketTypeIds = itemsToProcess.map((i: any) => Number(i.ticketTypeId));
-    const ticketTypes = await prisma.ticketType.findMany({
-      where: { id: { in: ticketTypeIds } }
-    });
-    
-    const typeMap = new Map();
-    ticketTypes.forEach((t: any) => typeMap.set(t.id, t));
-
-    // Generate tickets
-    const ticketsData: any[] = [];
-    let counter = 0;
-    for (const item of itemsToProcess) {
-      const itemTypeId = Number(item.ticketTypeId);
-      const itemQty = Number(item.quantity);
-
-      if (isNaN(itemTypeId) || isNaN(itemQty) || itemQty <= 0) {
-        continue;
-      }
-      
-      const ticketType = typeMap.get(itemTypeId);
-      if (!ticketType) {
-        continue;
-      }
-
-      for (let i = 0; i < itemQty; i++) {
-        // Store a compact unique identifier — NOT a base64 data URL.
-        // The QR image is rendered client-side from this string.
-        // This keeps the column size small and the data portable.
-        const qrIdentifier = `TKT-${Number(eventId)}-${user.id}-${itemTypeId}-${Date.now()}-${counter++}`;
-
-        ticketsData.push({
-          eventId: Number(eventId),
-          userId: user.id,
-          ticketTypeId: itemTypeId,
-          qrCode: qrIdentifier,
-          status: 'VALID' as any,
-          purchaseType: 'ONLINE' as any
-        });
-      }
-    }
-
-    if (ticketsData.length === 0) {
-      return res.status(400).json({ message: 'No valid ticket items were processed. Check ticketTypeId and quantity.' });
-    }
-
-    // Calculate total amount correctly from the fetched ticket types
-    let totalAmount = 0;
-    for (const item of items) {
-      const itemTypeId = Number(item.ticketTypeId);
-      const ticketType = typeMap.get(itemTypeId);
-      if (ticketType && ticketType.price > 0) {
-        totalAmount += ticketType.price * Number(item.quantity);
-      }
-    }
-
-    const platformFee = totalAmount > 0 ? totalAmount * 0.05 : 0;
-    const processingFee = totalAmount > 0 ? (totalAmount * 0.015) + 100 : 0;
-    const netAmount = totalAmount > 0 ? totalAmount - platformFee - processingFee : 0;
-
-    // Create the Order
-    const order = await prisma.order.create({
-      data: {
-        userId: user.id,
-        eventId: Number(eventId),
-        totalAmount,
-        platformFee,
-        processingFee,
-        netAmount,
-        status: 'PAID', // Assuming successful for guest checkout for now
-        purchaseType: 'ONLINE'
-      }
-    });
-
-    // Create tickets with orderId
+    // Create tickets
     const tickets = [];
-    for (const tData of ticketsData) {
+    for (let i = 0; i < quantity; i++) {
       const ticket = await prisma.ticket.create({
         data: {
-          ...tData,
-          orderId: order.id
+          eventId,
+          ticketTypeId,
+          userId: req.userId || undefined,
+          qrCode: `QR-${Date.now()}-${i}`,
+          purchaseType: 'ONLINE',
         },
         include: {
-          event: {
-            select: {
-              id: true,
-              title: true,
-              startDate: true,
-              endDate: true,
-              location: true
-            }
-          },
-          ticketType: {
-            select: {
-              id: true,
-              name: true,
-              price: true
-            }
-          }
-        }
+          event: true,
+          ticketType: true,
+        },
       });
       tickets.push(ticket);
     }
 
-    return res.status(201).json({
-      message: 'Tickets purchased successfully',
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName
+    res.status(201).json({ tickets });
+  } catch (error) {
+    console.error('Error purchasing ticket:', error);
+    res.status(500).json({ message: 'Error purchasing ticket' });
+  }
+};
+
+/**
+ * Create a new ticket
+ * Requires user to be an event organizer or organization member
+ */
+export const createTicket = async (req: AuthRequest, res: Response) => {
+  try {
+    // Require authentication
+    if (!req.userId) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
+    }
+
+    const { eventId, ticketTypeId } = req.body;
+
+    // Validate required fields
+    if (!eventId || !ticketTypeId) {
+      res.status(400).json({ message: 'Missing required fields' });
+      return;
+    }
+
+    // Get the event and check authorization
+    const event = await prisma.event.findUnique({
+      where: { id: eventId },
+      include: {
+        organization: true,
       },
-      tickets
     });
 
-  } catch (error: any) {
-    console.error('Guest checkout error:', error?.message || error);
-    if (error?.code === 'P2002') {
-      return res.status(409).json({ message: 'A ticket with this QR code already exists. Please try again.' });
+    if (!event) {
+      res.status(404).json({ message: 'Event not found' });
+      return;
     }
-    if (error?.code === 'P2003') {
-      return res.status(400).json({ message: 'Invalid event or ticket type reference.' });
+
+    // Uncommented authorization check: verify user is event organizer or org member
+    let isAuthorized = false;
+
+    if (event.organization) {
+      // Check if user is organization owner
+      if (event.organization.ownerId === req.userId) {
+        isAuthorized = true;
+      }
+
+      // Check if user is organization member
+      if (!isAuthorized) {
+        const orgMember = await prisma.organizationMember.findUnique({
+          where: {
+            userId_organizationId: {
+              userId: req.userId,
+              organizationId: event.organization.id,
+            },
+          },
+        });
+
+        if (orgMember) {
+          isAuthorized = true;
+        }
+      }
     }
-    return res.status(500).json({ message: 'Server error during guest checkout', detail: error?.message });
+
+    if (!isAuthorized) {
+      res.status(403).json({ message: 'You do not have permission to create tickets for this event' });
+      return;
+    }
+
+    // Create the ticket
+    const ticket = await prisma.ticket.create({
+      data: {
+        eventId,
+        ticketTypeId,
+        qrCode: `QR-${Date.now()}-${Math.random()}`,
+        purchaseType: 'GATE',
+      },
+      include: {
+        event: true,
+        ticketType: true,
+      },
+    });
+
+    res.status(201).json(ticket);
+  } catch (error) {
+    console.error('Error creating ticket:', error);
+    res.status(500).json({ message: 'Error creating ticket' });
   }
+};
+
+/**
+ * Validate a ticket
+ */
+export const validateTicket = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: parseInt(id) },
+    });
+
+    if (!ticket) {
+      res.status(404).json({ message: 'Ticket not found' });
+      return;
+    }
+
+    if (ticket.status === 'USED') {
+      res.status(400).json({ message: 'Ticket already used' });
+      return;
+    }
+
+    if (ticket.status === 'CANCELLED') {
+      res.status(400).json({ message: 'Ticket is cancelled' });
+      return;
+    }
+
+    res.status(200).json({ valid: true, ticket });
+  } catch (error) {
+    console.error('Error validating ticket:', error);
+    res.status(500).json({ message: 'Error validating ticket' });
+  }
+};
+
+/**
+ * Request ticket recovery
+ */
+export const requestTicketRecovery = async (req: AuthRequest, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      res.status(400).json({ message: 'Email is required' });
+      return;
+    }
+
+    // Find user by email
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      res.status(404).json({ message: 'User not found' });
+      return;
+    }
+
+    // Create OTP in database (now async)
+    const { code, expiresIn } = await createOTP(email);
+
+    // Send OTP email
+    const emailTemplate = generateOTPEmail(email, code, expiresIn);
+    const sent = await sendEmail({
+      to: email,
+      subject: emailTemplate.subject,
+      html: emailTemplate.html,
+      text: emailTemplate.text,
+    });
+
+    if (!sent) {
+      res.status(500).json({ message: 'Failed to send verification code. Please try again.' });
+      return;
+    }
+
+    res.json({ message: 'Verification code sent successfully', email });
+  } catch (error: any) {
+    console.error('[Recovery] requestTicketRecovery error:', error);
+    res.status(500).json({ message: 'Server error during recovery request.' });
+  }
+};
+
+/**
+ * Verify ticket recovery
+ * Also performs on-demand OTP cleanup for Vercel (serverless environment)
+ */
+export const verifyTicketRecovery = async (req: AuthRequest, res: Response) => {
+  try {
+    // On-demand cleanup for Vercel (no persistent timers in serverless)
+    if (process.env.VERCEL === '1') {
+      cleanupExpiredOTPs().catch(err => console.error('[OTP] Cleanup error:', err));
+    }
+
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      res.status(400).json({ message: 'Email and verification code are required.' });
+      return;
+    }
+
+    // Verify OTP from database (now async)
+    const result = await verifyOTP(email, code);
+
+    if (!result.valid) {
+      res.status(400).json({ message: result.message });
+      return;
+    }
+
+    // Consume the OTP (now async)
+    await consumeOTP(email);
+
+    // Find user by email
+    const user = await prisma.user.findUnique({
+      where: { email }
+    });
+
+    if (!user) {
+      res.json({ tickets: [], message: 'No account found.' });
+      return;
+    }
+
+    // Get user's tickets
+    const tickets = await prisma.ticket.findMany({
+      where: {
+        userId: user.id,
+      },
+      include: {
+        event: true,
+        ticketType: true,
+      },
+    });
+
+    res.json({ tickets });
+  } catch (error: any) {
+    console.error('[Recovery] verifyTicketRecovery error:', error);
+    res.status(500).json({ message: 'Server error during verification.' });
+  }
+};
+
+/**
+ * Checkout as guest
+ * Add input validation for firstName, lastName, email, phone
+ */
+export const checkoutGuest = async (req: AuthRequest, res: Response) => {
+  try {
+    const { firstName, lastName, email, phone, eventId, ticketTypeId, quantity } = req.body;
+
+    // Input validation for firstName
+    if (!firstName || !isValidName(firstName)) {
+      res.status(400).json({ message: 'Invalid first name' });
+      return;
+    }
+
+    // Input validation for lastName
+    if (!lastName || !isValidName(lastName)) {
+      res.status(400).json({ message: 'Invalid last name' });
+      return;
+    }
+
+    // Input validation for email
+    if (!email || !isValidEmail(email)) {
+      res.status(400).json({ message: 'Invalid email address' });
+      return;
+    }
+
+    // Input validation for phone
+    if (phone && !isValidPhone(phone)) {
+      res.status(400).json({ message: 'Invalid phone number' });
+      return;
+    }
+
+    // Validate ticket fields
+    if (!eventId || !ticketTypeId || !quantity) {
+      res.status(400).json({ message: 'Missing required fields for ticket' });
+      return;
+    }
+
+    // Sanitize string inputs
+    const sanitizedFirstName = sanitizeString(firstName);
+    const sanitizedLastName = sanitizeString(lastName);
+    const sanitizedPhone = phone ? sanitizeString(phone) : undefined;
+
+    // Check if event exists
+    const event = await prisma.event.findUnique({
+      where: { id: eventId },
+    });
+
+    if (!event) {
+      res.status(404).json({ message: 'Event not found' });
+      return;
+    }
+
+    // Check if ticket type exists
+    const ticketType = await prisma.ticketType.findUnique({
+      where: { id: ticketTypeId },
+    });
+
+    if (!ticketType) {
+      res.status(404).json({ message: 'Ticket type not found' });
+      return;
+    }
+
+    // Find or create guest user
+    let guestUser = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!guestUser) {
+      guestUser = await prisma.user.create({
+        data: {
+          email,
+          firstName: sanitizedFirstName,
+          lastName: sanitizedLastName,
+          phone: sanitizedPhone,
+          isGuest: true,
+          role: 'USER',
+        },
+      });
+    }
+
+    // Use database transaction to ensure order + tickets are created atomically
+    const result = await prisma.$transaction(async (tx) => {
+      // Calculate totals
+      const totalAmount = ticketType.price * quantity;
+      const platformFee = totalAmount > 0 ? totalAmount * 0.05 : 0;
+      const processingFee = totalAmount > 0 ? (totalAmount * 0.015) + 100 : 0;
+      const netAmount = totalAmount > 0 ? totalAmount - platformFee - processingFee : 0;
+
+      // Create order first
+      const order = await tx.order.create({
+        data: {
+          userId: guestUser.id,
+          eventId,
+          totalAmount,
+          platformFee,
+          processingFee,
+          netAmount,
+          status: 'PAID',
+          purchaseType: 'ONLINE',
+        },
+      });
+
+      // Create tickets linked to the order
+      const tickets = [];
+      for (let i = 0; i < quantity; i++) {
+        const ticket = await tx.ticket.create({
+          data: {
+            eventId,
+            ticketTypeId,
+            userId: guestUser.id,
+            qrCode: `QR-${Date.now()}-${i}-${Math.random()}`,
+            purchaseType: 'ONLINE',
+            orderId: order.id,
+          },
+          include: {
+            event: true,
+            ticketType: true,
+          },
+        });
+        tickets.push(ticket);
+      }
+
+      return { order, tickets };
+    });
+
+    res.status(201).json({
+      message: 'Guest checkout successful',
+      user: guestUser,
+      order: result.order,
+      tickets: result.tickets,
+    });
+  } catch (error) {
+    console.error('Error during guest checkout:', error);
+    res.status(500).json({ message: 'Error during guest checkout' });
+  }
+};
+
+// Export all functions
+export default {
+  getTickets,
+  getTicketById,
+  purchaseTicket,
+  createTicket,
+  validateTicket,
+  requestTicketRecovery,
+  verifyTicketRecovery,
+  checkoutGuest,
 };

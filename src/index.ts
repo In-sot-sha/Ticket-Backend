@@ -14,10 +14,12 @@ import { startOTPCleanupSchedule } from './services/otp';
 const app = express();
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
-// Allow requests from any origin in dev; restrict to your domain in production.
+// Load CORS origins from environment or use defaults
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000',`https://partystorm.vercel.app`];
+  : process.env.NODE_ENV === 'production'
+    ? ['https://partystorm.vercel.app']
+    : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000', 'https://partystorm.vercel.app'];
 
 app.use(
   cors({
@@ -122,14 +124,20 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   res.status(status).json({ message });
 });
 
+// ── OTP Cleanup ───────────────────────────────────────────────────────────────
+// On Vercel (serverless), we can't use setInterval since each request is isolated.
+// Instead, we cleanup on-demand when OTP endpoints are called.
+// This is handled in the recovery controller.
+if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
+  // Local development: start periodic cleanup
+  startOTPCleanupSchedule();
+}
+
 // ── Local dev server ──────────────────────────────────────────────────────────
 // On Vercel this block is never reached — the `export default app` below is
 // what Vercel uses.  Locally, we still call listen() so `npm run dev` works.
 if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
   const PORT = process.env.PORT ?? 33312;
-  
-  // Start OTP cleanup scheduler (runs every 5 minutes)
-  startOTPCleanupSchedule();
   
   app.listen(PORT, () => {
     console.log(`✅  Server running on http://localhost:${PORT}`);

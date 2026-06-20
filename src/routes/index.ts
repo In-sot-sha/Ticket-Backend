@@ -2,6 +2,7 @@ import express, { Router } from 'express'
 import userRoutes from './user'
 import eventRoutes from './event'
 import ticketRoutes from './ticket'
+import recoveryRoutes from './recovery'
 import vendorRoutes from './vendor'
 import vendorTypeRoutes from './vendorType'
 import userRoleRoutes from './userRole'
@@ -19,6 +20,7 @@ const router: Router = express.Router()
 router.use("/users", userRoutes);
 router.use("/events", eventRoutes);
 router.use("/tickets", ticketRoutes);
+router.use("/recovery", recoveryRoutes);
 router.use("/vendors", vendorRoutes);
 router.use("/vendor-types", vendorTypeRoutes);
 router.use("/user-roles", userRoleRoutes);

@@ -402,3 +402,18 @@ model SupportTicketMessage {
 
   @@index([ticketId])
 }
+
+model Otp {
+  id        Int      @id @default(autoincrement())
+  contact   String   // Email or phone number
+  code      String   // 6-digit OTP code
+  attempts  Int      @default(0) // Failed verification attempts
+  verified  Boolean  @default(false) // Whether OTP has been verified
+  expiresAt DateTime // When the OTP expires
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contact])
+  @@index([expiresAt])
+  @@unique([contact]) // Only one active OTP per contact
+}

@@ -295,13 +295,13 @@ export const updateVendorApplicationStatus = async (req: AuthRequest, res: Respo
     }
 
     // Check if current user is the organizer of the event or a member of the organization
-    // const isOrgOwner = vendorApplication.event.organization.ownerId === req.userId;
-    // const isOrgMember = vendorApplication.event.organization.members.some(member => member.userId === req.userId);
+    const isOrgOwner = vendorApplication.event?.organization?.ownerId === req.userId;
+    const isOrgMember = vendorApplication.event?.organization?.members.some(member => member.userId === req.userId);
     
-    // if (!isOrgOwner && !isOrgMember) {
-    //   res.status(403).json({ message: 'You do not have permission to update this vendor application status' });
-    //   return; // Explicitly return to satisfy TypeScript
-    // }
+    if (!isOrgOwner && !isOrgMember) {
+      res.status(403).json({ message: 'You do not have permission to update this vendor application status' });
+      return; // Explicitly return to satisfy TypeScript
+    }
 
     // Update vendor application status
     const updatedApplication = await prisma.vendorApplication.update({
