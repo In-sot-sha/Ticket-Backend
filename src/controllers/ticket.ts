@@ -306,9 +306,9 @@ export const requestTicketRecovery = async (req: AuthRequest, res: Response) => 
 export const verifyTicketRecovery = async (req: AuthRequest, res: Response) => {
   try {
     // On-demand cleanup for Vercel (no persistent timers in serverless)
-    if (process.env.VERCEL === '1') {
-      cleanupExpiredOTPs().catch(err => console.error('[OTP] Cleanup error:', err));
-    }
+    // if (process.env.VERCEL === '1') {
+    //   cleanupExpiredOTPs().catch(err => console.error('[OTP] Cleanup error:', err));
+    // }
 
     const { email, code } = req.body;
 

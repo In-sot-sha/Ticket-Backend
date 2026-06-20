@@ -128,22 +128,22 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 // On Vercel (serverless), we can't use setInterval since each request is isolated.
 // Instead, we cleanup on-demand when OTP endpoints are called.
 // This is handled in the recovery controller.
-if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
-  // Local development: start periodic cleanup
-  startOTPCleanupSchedule();
-}
+// if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
+//   // Local development: start periodic cleanup
+//   startOTPCleanupSchedule();
+// }
 
 // ── Local dev server ──────────────────────────────────────────────────────────
 // On Vercel this block is never reached — the `export default app` below is
 // what Vercel uses.  Locally, we still call listen() so `npm run dev` works.
-if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
+// if (process.env.NODE_ENV !== 'production' && process.env.VERCEL !== '1') {
   const PORT = process.env.PORT ?? 33312;
   
   app.listen(PORT, () => {
     console.log(`✅  Server running on http://localhost:${PORT}`);
     console.log(`    Health: http://localhost:${PORT}/health`);
   });
-}
+// }
 
 // ── Vercel serverless export ──────────────────────────────────────────────────
 export default app;
