@@ -6,13 +6,56 @@ import { createOTP, verifyOTP, consumeOTP, cleanupExpiredOTPs } from '../service
 import { sendEmail, generateOTPEmail } from '../services/email';
 
 /**
- * Get all tickets for the authenticated user
+ * Get all tickets for the authenticated user or for an event (by eventId param)
  * Users can only see their own tickets unless they're admins
  * Admins can see all tickets
+ * For event attendance, eventId param bypasses user check if requester is the organizer
  */
 export const getTickets = async (req: AuthRequest, res: Response) => {
   try {
-    // Require authentication
+    const { eventId } = req.params;
+
+    // If eventId is provided, check if requester is the organizer
+    if (eventId) {
+      const eventIdNum = Number(eventId);
+      const event = await prisma.event.findUnique({
+        where: { id: eventIdNum },
+        include: { organization: { include: { members: true } } }
+      });
+
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      // Check if user is organizer or member of the organization
+      const isOrganizer = event.organization?.members.some(m => m.userId === req.userId) ?? false;
+      const isEventOwner = event.organizationId === req.userId;
+
+      if (!isOrganizer && !isEventOwner && req.role !== 'ADMIN') {
+        res.status(403).json({ message: 'Not authorized to view this event\'s attendance' });
+        return;
+      }
+
+      // Return all checked-in tickets for the event
+      const tickets = await prisma.ticket.findMany({
+        where: {
+          eventId: eventIdNum,
+          status: 'USED' // Only checked-in (used) tickets
+        },
+        include: {
+          event: true,
+          user: true,
+          ticketType: true,
+        },
+        orderBy: { updatedAt: 'desc' }
+      });
+
+      res.status(200).json(tickets);
+      return;
+    }
+
+    // Require authentication for personal tickets
     if (!req.userId) {
       res.status(401).json({ message: 'Authentication required' });
       return;

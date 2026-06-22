@@ -18,3 +18,4 @@ uploads/*
 
 # OS noise
 .DS_Store
+.vercel
