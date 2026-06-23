@@ -5,9 +5,12 @@ import {
   getTicketById, 
   validateTicket, 
   purchaseTicket,
+    requestTicketRecovery,
+  verifyTicketRecovery,
   checkoutGuest
 } from '../controllers/ticket';
 import { verifyToken, optionalVerifyToken } from '../middleware/auth';
+import { otpRequestRateLimit } from '../middleware/rateLimit';
 
 const router = Router();
 
@@ -23,5 +26,7 @@ router.get('/:id', getTicketById);
 // Protected routes (authentication required)
 router.post('/purchase', verifyToken, purchaseTicket);
 router.post('/', verifyToken, createTicket); // For organizers to create tickets
+router.post('/recover/request', otpRequestRateLimit(), requestTicketRecovery);
+router.post('/recover/verify', verifyTicketRecovery);
 
 export default router;

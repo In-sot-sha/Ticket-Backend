@@ -303,6 +303,8 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       vendorTypes, // Added to support multiple vendor types
       amenities,
       highlights,
+      latitude,
+      longitude,
     } = req.body;
 
     const parsedTicketTypes = parseJsonField<Array<{
@@ -380,7 +382,9 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
         vendorDeadline: vendorDeadline ? new Date(vendorDeadline) : null,
         gateTicketing: parseBoolean(gateTicketing),
         locationType: resolvedLocationType,
-        onlineUrl: resolvedLocationType === 'online' ? resolvedOnlineUrl : null
+        onlineUrl: resolvedLocationType === 'online' ? resolvedOnlineUrl : null,
+        latitude: latitude ? parseFloat(latitude) : null,
+        longitude: longitude ? parseFloat(longitude) : null,
       }
     });
 
@@ -482,6 +486,8 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       vendorTypes,
       amenities,
       highlights,
+      latitude,
+      longitude,
     } = req.body;
 
     const parsedTicketTypes = parseJsonField<Array<{
@@ -560,7 +566,9 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       vendorDeadline: vendorDeadline ? new Date(vendorDeadline) : existingEvent.vendorDeadline,
       gateTicketing: gateTicketing !== undefined ? parseBoolean(gateTicketing) : existingEvent.gateTicketing,
       locationType: resolvedLocationType,
-      onlineUrl: resolvedLocationType === 'online' ? resolvedOnlineUrl : null
+      onlineUrl: resolvedLocationType === 'online' ? resolvedOnlineUrl : null,
+      ...(latitude !== undefined && { latitude: latitude ? parseFloat(latitude) : null }),
+      ...(longitude !== undefined && { longitude: longitude ? parseFloat(longitude) : null }),
     };
 
     // If organizationId is provided and different from current, check permissions

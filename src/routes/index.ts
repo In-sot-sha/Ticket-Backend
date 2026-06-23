@@ -20,7 +20,7 @@ const router: Router = express.Router()
 router.use("/users", userRoutes);
 router.use("/events", eventRoutes);
 router.use("/tickets", ticketRoutes);
-router.use("/recovery", recoveryRoutes);
+router.use("/ticktes/recover", recoveryRoutes);
 router.use("/vendors", vendorRoutes);
 router.use("/vendor-types", vendorTypeRoutes);
 router.use("/user-roles", userRoleRoutes);
