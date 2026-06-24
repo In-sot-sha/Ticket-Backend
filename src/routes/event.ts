@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   createEvent,
   getEvents,
-  getEventById,
+  getEvent,
   updateEvent,
   deleteEvent,
   getOrganizerEvents,
@@ -16,14 +16,21 @@ const router = Router();
 
 // Public routes
 router.get('/', getEvents);
-router.get('/get-event/:id', getEventById);
+
+// Unified event lookup — works with slug OR numeric ID
+// e.g. /events/get/afro-fusion-festival-abuja  or  /events/get/42
+router.get('/get/:identifier', getEvent);
+
+// Legacy aliases so existing clients & bookmarks keep working
+router.get('/get-event/:identifier', getEvent);  // old ID-based route
+router.get('/slug/:identifier', getEvent);         // old slug-based route
 
 // Protected routes
 router.get('/organizer/analytics', verifyToken, getOrganizerAnalytics);
 router.get('/organizer', verifyToken, getOrganizerEvents);
 router.get('/organizer/:id', verifyToken, getOrganizerEventById);
 router.post('/', verifyToken,  upload.single('image'), createEvent);
-router.get('/:id', getEventById);
+router.get('/:identifier', getEvent);
 // router.post('/vendor', verifyToken,  upload.single('image'), createEvent);
 router.put('/update/:id', verifyToken, upload.single('image'), updateEvent);
 router.put('/:id', verifyToken, upload.single('image'), updateEvent);

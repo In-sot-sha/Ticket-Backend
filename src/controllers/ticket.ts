@@ -301,16 +301,16 @@ export const validateTicket = async (req: AuthRequest, res: Response) => {
  */
 export const requestTicketRecovery = async (req: AuthRequest, res: Response) => {
   try {
-    const { email } = req.body;
+    const { contact, method } = req.body;
 
-    if (!email) {
-      res.status(400).json({ message: 'Email is required' });
+    if (!contact) {
+      res.status(400).json({ message: 'Contact information is required' });
       return;
     }
 
-    // Find user by email
-    const user = await prisma.user.findUnique({
-      where: { email },
+    // Find user by email or phone
+    const user = await prisma.user.findFirst({
+      where: method === 'phone' ? { phone: contact } : { email: contact },
     });
 
     if (!user) {
@@ -318,13 +318,19 @@ export const requestTicketRecovery = async (req: AuthRequest, res: Response) => 
       return;
     }
 
-    // Create OTP in database (now async)
-    const { code, expiresIn } = await createOTP(email);
+    // Create OTP in database
+    const { code, expiresIn } = await createOTP(contact);
+
+    if (method === 'phone') {
+      // Simulate SMS or reject if SMS isn't configured
+      res.status(400).json({ message: 'Phone recovery is not supported yet. Please use email.' });
+      return;
+    }
 
     // Send OTP email
-    const emailTemplate = generateOTPEmail(email, code, expiresIn);
+    const emailTemplate = generateOTPEmail(contact, code, expiresIn);
     const sent = await sendEmail({
-      to: email,
+      to: contact,
       subject: emailTemplate.subject,
       html: emailTemplate.html,
       text: emailTemplate.text,
@@ -335,7 +341,7 @@ export const requestTicketRecovery = async (req: AuthRequest, res: Response) => 
       return;
     }
 
-    res.json({ message: 'Verification code sent successfully', email });
+    res.json({ message: 'Verification code sent successfully', contact });
   } catch (error: any) {
     console.error('[Recovery] requestTicketRecovery error:', error);
     res.status(500).json({ message: 'Server error during recovery request.' });
@@ -353,15 +359,15 @@ export const verifyTicketRecovery = async (req: AuthRequest, res: Response) => {
     //   cleanupExpiredOTPs().catch(err => console.error('[OTP] Cleanup error:', err));
     // }
 
-    const { email, code } = req.body;
+    const { contact, code } = req.body;
 
-    if (!email || !code) {
-      res.status(400).json({ message: 'Email and verification code are required.' });
+    if (!contact || !code) {
+      res.status(400).json({ message: 'Contact and verification code are required.' });
       return;
     }
 
     // Verify OTP from database (now async)
-    const result = await verifyOTP(email, code);
+    const result = await verifyOTP(contact, code);
 
     if (!result.valid) {
       res.status(400).json({ message: result.message });
@@ -369,11 +375,16 @@ export const verifyTicketRecovery = async (req: AuthRequest, res: Response) => {
     }
 
     // Consume the OTP (now async)
-    await consumeOTP(email);
+    await consumeOTP(contact);
 
-    // Find user by email
-    const user = await prisma.user.findUnique({
-      where: { email }
+    // Find user by email or phone
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: contact },
+          { phone: contact }
+        ]
+      }
     });
 
     if (!user) {

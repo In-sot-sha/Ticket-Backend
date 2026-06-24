@@ -4,6 +4,29 @@ import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/auth';
 import { uploadEventImage } from '../utils/imageUpload';
 
+// Helper to generate a URL-friendly slug
+function createSlug(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+}
+
+// Generate a unique slug checking against the DB
+async function generateUniqueSlug(title: string, currentEventId?: number): Promise<string> {
+  const baseSlug = createSlug(title);
+  let slug = baseSlug || 'event';
+  let counter = 1;
+  while (true) {
+    const existing = await prisma.event.findFirst({ where: { slug } });
+    if (!existing || existing.id === currentEventId) {
+      return slug;
+    }
+    slug = `${baseSlug}-${counter}`;
+    counter++;
+  }
+}
+
+// Upstash Redis cache (feature-flagged via ENABLE_REDIS_CACHE env var)
+import { cacheGet, cacheSet, cacheFlushPattern } from '../utils/cache';
+
 type TicketSoldGroupRow = {
   ticketTypeId: number;
   status: TicketStatus;
@@ -128,10 +151,17 @@ export const getEvents = async (req: Request, res: Response) => {
       isPublished: true // Only return published events
     };
 
+    const cacheKey = `events_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}`;
+
+    const cachedData = await cacheGet(cacheKey);
+    if (cachedData) {
+      return res.json(cachedData);
+    }
+
     if (search) {
       whereClause.OR = [
-        { title: { contains: String(search), mode: 'insensitive' } },
-        { description: { contains: String(search), mode: 'insensitive' } }
+        { title: { contains: String(search) } },
+        { description: { contains: String(search) } }
       ];
     }
 
@@ -191,7 +221,7 @@ export const getEvents = async (req: Request, res: Response) => {
 
     const total = await prisma.event.count({ where: whereClause });
 
-    return res.json({
+    const responseData = {
       events,
       pagination: {
         page: pageNum,
@@ -199,77 +229,89 @@ export const getEvents = async (req: Request, res: Response) => {
         total,
         pages: Math.ceil(total / limitNum)
       }
-    });
+    };
+
+    await cacheSet(cacheKey, responseData, 60);
+
+    return res.json(responseData);
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
   }
 };
 
-// Get event by ID
-export const getEventById = async (req: Request, res: Response) => {
-  console.log('here')
+// Get event by identifier — accepts slug OR numeric ID in a single endpoint.
+// This replaces the old getEventById and getEventBySlug controllers.
+export const getEvent = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { identifier } = req.params;
 
-    // Validate that ID is a valid number
-    const eventId = Number(id);
-    if (isNaN(eventId) || eventId <= 0) {
-      return res.status(400).json({ message: 'Invalid event ID' });
+    if (!identifier) {
+      return res.status(400).json({ message: 'Missing event identifier' });
     }
 
-    const event = await prisma.event.findUnique({
-      where: { id: eventId },
-      include: {
-        organization: {
-          select: {
-            id: true,
-            name: true
-          }
+    const eventIncludes = {
+      organization: {
+        select: { id: true, name: true }
+      },
+      ticketTypes: {
+        select: {
+          id: true, name: true, price: true, quantity: true,
+          ticketStyle: true, accentColor: true, badgeText: true,
+          ticketHeadline: true, venueLabel: true,
         },
-        ticketTypes: {
-          select: {
-            id: true,
-            name: true,
-            price: true,
-            quantity: true,
-            ticketStyle: true,
-            accentColor: true,
-            badgeText: true,
-            ticketHeadline: true,
-            venueLabel: true,
-          },
-        },
-        vendorTypes: {
-          select: {
-            id: true,
-            name: true,
-            fee: true,
-            maxVendors: true
-          }
-        },
-        vendorApplications: {
-          where: {
-            applicationStatus: 'APPROVED' // Only approved vendors
-          },
-          select: {
-            id: true,
-            vendor: {
-              select: {
-                businessName: true,
-                description: true
-              }
-            }
+      },
+      vendorTypes: {
+        select: { id: true, name: true, fee: true, maxVendors: true }
+      },
+      vendorApplications: {
+        where: { applicationStatus: 'APPROVED' as const },
+        select: {
+          id: true,
+          vendor: {
+            select: { businessName: true, description: true }
           }
         }
       }
-    });
+    };
+
+    // Check cache first
+    const cacheKey = `event_${identifier}`;
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
+    let event = null;
+
+    // Determine if the identifier is a numeric ID or a slug
+    const numericId = Number(identifier);
+    const isNumeric = !isNaN(numericId) && numericId > 0 && String(numericId) === identifier;
+
+    if (isNumeric) {
+      // Try by ID first
+      event = await prisma.event.findUnique({
+        where: { id: numericId },
+        include: eventIncludes,
+      });
+    }
+
+    // If not found by ID (or identifier is a slug), try by slug
+    if (!event) {
+      event = await prisma.event.findUnique({
+        where: { slug: identifier },
+        include: eventIncludes,
+      });
+    }
 
     if (!event) {
       return res.status(404).json({ message: 'Event not found' });
     }
 
-   return res.json(event);
+    // Cache for 2 minutes
+    await cacheSet(cacheKey, event, 120);
+
+    return res.json(event);
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -363,10 +405,13 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    const slug = await generateUniqueSlug(title);
+
     // Create event with organization reference instead of direct user reference
     const event = await prisma.event.create({
       data: {
         title,
+        slug,
         description,
         startDate: new Date(startDate),
         endDate: new Date(endDate),
@@ -545,9 +590,15 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       ? (resolvedOnlineUrl || existingEvent.location)
       : (location || existingEvent.location);
 
+    let newSlug = existingEvent.slug;
+    if (title && title !== existingEvent.title) {
+      newSlug = await generateUniqueSlug(title, existingEvent.id);
+    }
+
     // Prepare update data
     const updateData: any = {
       title: title ?? existingEvent.title,
+      slug: newSlug,
       description: description ?? existingEvent.description,
       startDate: startDate ? new Date(startDate) : existingEvent.startDate,
       endDate: endDate ? new Date(endDate) : existingEvent.endDate,

@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -65,19 +65,18 @@ enum SupportTicketCategory {
 }
 
 model User {
-  id                    Int      @id @default(autoincrement())
-  email                 String   @unique
-  password              String?
-  authProvider          String   @default("local")
-  authProviderId        String?  @unique
-  firstName             String
-  lastName              String
-  phone                 String?
-  role                  UserRole @default(USER)
-  isVerified            Boolean  @default(false)
-  isGuest               Boolean  @default(false)
-  avatar                String?
-
+  id             Int      @id @default(autoincrement())
+  email          String   @unique
+  password       String?
+  authProvider   String   @default("local")
+  authProviderId String?  @unique
+  firstName      String
+  lastName       String
+  phone          String?
+  role           UserRole @default(USER)
+  isVerified     Boolean  @default(false)
+  isGuest        Boolean  @default(false)
+  avatar         String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -97,18 +96,18 @@ model User {
 }
 
 model Organization {
-  id          Int      @id @default(autoincrement())
-  name        String
-  description String?
-  logo        String?
-  website     String?
-  socials     String?
-  ownerId     Int // Foreign key to User (owner)
-  isVerified  Boolean  @default(false)
-  rejectionReason String? @db.Text
-  rejectedAt    DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              Int       @id @default(autoincrement())
+  name            String
+  description     String?
+  logo            String?
+  website         String?
+  socials         String?
+  ownerId         Int // Foreign key to User (owner)
+  isVerified      Boolean   @default(false)
+  rejectionReason String?   @db.Text
+  rejectedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   // Payout Settings
   payoutBankName      String?
@@ -117,9 +116,9 @@ model Organization {
   payoutSchedule      String? @default("AFTER_EVENT")
 
   // Tax Settings
-  taxId               String?
-  vatNumber           String?
-  businessAddress     String? @db.Text
+  taxId           String?
+  vatNumber       String?
+  businessAddress String? @db.Text
 
   // Relations
   owner     User                     @relation("OwnedOrganizations", fields: [ownerId], references: [id])
@@ -158,83 +157,85 @@ model UserOrganizationFollow {
 }
 
 model Event {
-  id               Int        @id @default(autoincrement())
-  title            String
-  description      String
-  startDate        DateTime
-  endDate          DateTime
-  location         String?    // Physical location if applicable
-  onlineUrl        String?    // URL for online events
-  locationType     String     // 'physical', 'online', or 'hybrid'
-  organizationId   Int?       // Foreign key to Organization (nullable for transition)
-  price            Float?
-  capacity         Int?
-  imageUrl         String?
-  category         String?
-  amenities        String?    @db.Text // JSON array of strings
-  highlights       String?    @db.Text // JSON array of { icon, label }
-  isPublished      Boolean    @default(false)
-  latitude         Float?     // GPS latitude for event location
-  longitude        Float?     // GPS longitude for event location
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
-  
+  id             Int      @id @default(autoincrement())
+  slug           String?  @unique
+  title          String
+  description    String
+  startDate      DateTime
+  endDate        DateTime
+  location       String? // Physical location if applicable
+  onlineUrl      String? // URL for online events
+  locationType   String // 'physical', 'online', or 'hybrid'
+  organizationId Int? // Foreign key to Organization (nullable for transition)
+  price          Float?
+  capacity       Int?
+  imageUrl       String?
+  category       String?
+  amenities      String?  @db.Text // JSON array of strings
+  highlights     String?  @db.Text // JSON array of { icon, label }
+  isPublished    Boolean  @default(false)
+  latitude       Float? // GPS latitude for event location
+  longitude      Float? // GPS longitude for event location
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
   // Recurring event fields
-  isRecurring      Boolean    @default(false)
-  recurrencePattern RecurrencePattern?  // If recurring, how often
-  recurrenceEnd    DateTime?  // When recurring ends
-  recurrenceInterval Int?     // How often to repeat (e.g. every N weeks)
-  
+  isRecurring        Boolean            @default(false)
+  recurrencePattern  RecurrencePattern? // If recurring, how often
+  recurrenceEnd      DateTime? // When recurring ends
+  recurrenceInterval Int? // How often to repeat (e.g. every N weeks)
+
   // Tags
-  tags             Json?      // JSON array of strings
-  
+  tags Json? // JSON array of strings
+
   // Ticket types
-  ticketTypes      TicketType[]
-  
+  ticketTypes TicketType[]
+
   // Vendors
-  allowVendors     Boolean    @default(false)
-  vendorDeadline   DateTime?
-  gateTicketing    Boolean    @default(false)  // Allow gate ticketing
-  vendorTypes      VendorType[] // Support multiple vendor types per event
+  allowVendors       Boolean             @default(false)
+  vendorDeadline     DateTime?
+  gateTicketing      Boolean             @default(false) // Allow gate ticketing
+  vendorTypes        VendorType[] // Support multiple vendor types per event
   vendorApplications VendorApplication[]
-  
+
   // Relations
-  organization     Organization? @relation(fields: [organizationId], references: [id])
-  tickets          Ticket[]
-  orders           Order[]
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  tickets      Ticket[]
+  orders       Order[]
+
+  @@index([isPublished, startDate])
+  @@index([category])
 }
-
-
 
 // Order model to replace redundant TicketPurchase
 model Order {
-  id           Int          @id @default(autoincrement())
-  userId       Int // User who made the order
-  eventId      Int
-  totalAmount  Float        @default(0)
-  platformFee  Float        @default(0)
-  processingFee Float       @default(0)
-  netAmount    Float        @default(0)
-  status       PaymentStatus @default(PENDING)
-  purchaseType PurchaseType @default(ONLINE)
-  createdAt    DateTime     @default(now())
+  id            Int           @id @default(autoincrement())
+  userId        Int // User who made the order
+  eventId       Int
+  totalAmount   Float         @default(0)
+  platformFee   Float         @default(0)
+  processingFee Float         @default(0)
+  netAmount     Float         @default(0)
+  status        PaymentStatus @default(PENDING)
+  purchaseType  PurchaseType  @default(ONLINE)
+  createdAt     DateTime      @default(now())
 
   // Relations
-  user       User       @relation(fields: [userId], references: [id])
-  event      Event      @relation(fields: [eventId], references: [id])
-  tickets    Ticket[]
+  user    User     @relation(fields: [userId], references: [id])
+  event   Event    @relation(fields: [eventId], references: [id])
+  tickets Ticket[]
 }
 
 model Payout {
-  id             Int      @id @default(autoincrement())
+  id             Int           @id @default(autoincrement())
   organizationId Int
   amount         Float
   status         PaymentStatus @default(PENDING)
   reference      String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
-  organization   Organization @relation(fields: [organizationId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
 }
 
 // Vendor profiles model (for storing vendor information for easy application)
@@ -272,31 +273,31 @@ model VendorApplication {
   rejectedAt        DateTime?
 
   // Relations
-  vendor Vendor @relation(fields: [vendorId], references: [id])
-  user   User   @relation("VendorApplicationsMade", fields: [userId], references: [id])
-  event  Event  @relation(fields: [eventId], references: [id])
+  vendor     Vendor      @relation(fields: [vendorId], references: [id])
+  user       User        @relation("VendorApplicationsMade", fields: [userId], references: [id])
+  event      Event       @relation(fields: [eventId], references: [id])
   vendorType VendorType? @relation(fields: [vendorTypeId], references: [id]) // Relation to vendor type
 
   @@unique([vendorId, eventId])
 }
 
 model TicketType {
-  id          Int      @id @default(autoincrement())
-  name        String // e.g. "General", "VIP", "Early Bird"
-  price       Float
-  quantity    Int?
-  eventId     Int // Foreign key to Event
+  id             Int      @id @default(autoincrement())
+  name           String // e.g. "General", "VIP", "Early Bird"
+  price          Float
+  quantity       Int?
+  eventId        Int // Foreign key to Event
   ticketStyle    String   @default("rose") // Visual preset: rose, gold, emerald, purple, midnight, ocean
-  accentColor    String?  // Optional custom hex override for the ticket stub
-  badgeText      String?  // Custom label on the ticket stub (defaults to ticket name)
-  ticketHeadline String?  // e.g. "COME AND JOIN"
-  venueLabel     String?  // e.g. "LIVE AT"
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  accentColor    String? // Optional custom hex override for the ticket stub
+  badgeText      String? // Custom label on the ticket stub (defaults to ticket name)
+  ticketHeadline String? // e.g. "COME AND JOIN"
+  venueLabel     String? // e.g. "LIVE AT"
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   // Relations
-  event           Event            @relation(fields: [eventId], references: [id])
-  tickets         Ticket[]
+  event   Event    @relation(fields: [eventId], references: [id])
+  tickets Ticket[]
 }
 
 model Ticket {
@@ -320,26 +321,26 @@ model Ticket {
 
 // Model for different vendor types within an event
 model VendorType {
-  id           Int      @id @default(autoincrement())
-  name         String   // e.g. "Food", "Merchandise", "Services"
-  fee          Float?   // Fee for this type of vendor (null means free)
-  maxVendors   Int?     // Maximum number of vendors for this type
-  eventId      Int      // Foreign key to Event
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id         Int      @id @default(autoincrement())
+  name       String // e.g. "Food", "Merchandise", "Services"
+  fee        Float? // Fee for this type of vendor (null means free)
+  maxVendors Int? // Maximum number of vendors for this type
+  eventId    Int // Foreign key to Event
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   // Relations
-  event    Event  @relation(fields: [eventId], references: [id])
+  event        Event               @relation(fields: [eventId], references: [id])
   applications VendorApplication[]
 }
 
 // Gate scanner PINs — lets gate staff scan tickets without a full account
 model GatePin {
   id             Int      @id @default(autoincrement())
-  pin            String   // 6-digit numeric PIN
-  staffName      String   // Display name for the gate worker
-  organizationId Int      // Which organisation issued this PIN
-  createdById    Int      // Organiser user who created it
+  pin            String // 6-digit numeric PIN
+  staffName      String // Display name for the gate worker
+  organizationId Int // Which organisation issued this PIN
+  createdById    Int // Organiser user who created it
   createdAt      DateTime @default(now())
 
   // Relations
@@ -353,20 +354,20 @@ model GatePin {
 // Error logs — tracks frontend crashes and errors
 model ErrorLog {
   id        Int      @id @default(autoincrement())
-  message   String   // Error message
+  message   String // Error message
   stack     String?  @db.Text // Full stack trace
   type      String   @default("ERROR") // ERROR, WARNING, etc.
   severity  String   @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
-  userId    Int?     // User ID if logged in (nullable for anonymous errors)
-  userAgent String?  // Browser info
-  url       String?  // Page URL where error occurred
-  context   Json?    // Additional context (component, action, etc.)
+  userId    Int? // User ID if logged in (nullable for anonymous errors)
+  userAgent String? // Browser info
+  url       String? // Page URL where error occurred
+  context   Json? // Additional context (component, action, etc.)
   resolved  Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relations
-  user      User?    @relation("ErrorLogs", fields: [userId], references: [id])
+  user User? @relation("ErrorLogs", fields: [userId], references: [id])
 
   @@index([createdAt])
   @@index([resolved])
@@ -407,15 +408,15 @@ model SupportTicketMessage {
 
 model Otp {
   id        Int      @id @default(autoincrement())
-  contact   String   // Email or phone number
-  code      String   // 6-digit OTP code
+  contact   String // Email or phone number
+  code      String // 6-digit OTP code
   attempts  Int      @default(0) // Failed verification attempts
   verified  Boolean  @default(false) // Whether OTP has been verified
   expiresAt DateTime // When the OTP expires
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([contact]) // Only one active OTP per contact
   @@index([contact])
   @@index([expiresAt])
-  @@unique([contact]) // Only one active OTP per contact
 }
