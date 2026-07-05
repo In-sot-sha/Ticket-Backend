@@ -68,13 +68,29 @@ try {
 // Smart cache headers based on endpoint and HTTP method
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.method === 'GET') {
+    // Honor hard-refresh: browser sends Cache-Control: no-cache on hard refresh
+    const clientNoCache = req.headers['cache-control'] === 'no-cache' || req.query['nocache'] === '1';
+
     // Static/rarely-changing endpoints: 1-day cache
     if (req.path.includes('/events/categories') || req.path.includes('/vendor-types')) {
-      res.set('Cache-Control', 'public, max-age=86400'); // 1 day
+      res.set('Cache-Control', clientNoCache ? 'no-cache, no-store, must-revalidate' : 'public, max-age=86400');
     }
-    // Dynamic endpoints: 5-minute cache
+    // Organizer-specific event routes and ticket attendance: always fresh (private)
+    else if (
+      req.path.includes('/events/organizer') ||
+      req.path.includes('/tickets/event/') ||
+      req.path.includes('/tickets/') ||
+      req.path.includes('/vendors/applications')
+    ) {
+      res.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+    }
+    // Public event detail/listing: short cache, bypass on hard refresh or ?nocache=1
+    else if (req.path.match(/\/events\/[^/]+$/)) {
+      // Single event detail — 1-minute cache (updated as tickets are bought)
+      res.set('Cache-Control', clientNoCache ? 'no-cache, no-store, must-revalidate' : 'public, max-age=60');
+    }
     else if (req.path.includes('/events')) {
-      res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
+      res.set('Cache-Control', clientNoCache ? 'no-cache, no-store, must-revalidate' : 'public, max-age=120'); // 2 min for listing
     }
     // User-specific / admin data: never cache
     else if (
@@ -87,7 +103,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     }
     // Default: 1-minute cache for other GET requests
     else {
-      res.set('Cache-Control', 'public, max-age=60');
+      res.set('Cache-Control', clientNoCache ? 'no-cache, no-store, must-revalidate' : 'public, max-age=60');
     }
   } else {
     // POST/PUT/DELETE: no cache

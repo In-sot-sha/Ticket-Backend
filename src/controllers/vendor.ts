@@ -2,139 +2,154 @@ import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/auth';
 
-// Register a vendor for an event (using new VendorApplication model with vendor types)
+// Register a vendor for an event
+// No separate vendorId required — uses userId + inline snapshot fields
 export const registerVendor = async (req: AuthRequest, res: Response) => {
   try {
-    const { eventId, vendorId, vendorTypeId, vendorType, paymentAmount } = req.body;
+    const {
+      eventId,
+      vendorTypeId,
+      vendorType,
+      paymentAmount,
+      paymentReference,
+      // Inline snapshot fields
+      businessName,
+      businessEmail,
+      businessPhone,
+      description,
+      category,
+      staffCount,
+    } = req.body;
+
+    if (!req.userId) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
+    }
 
     // Check if event allows vendors
     const event = await prisma.event.findUnique({
-      where: { id: Number(eventId) }
+      where: { id: Number(eventId) },
+      include: { organization: true }
     });
 
     if (!event || !event.allowVendors) {
       res.status(400).json({ message: 'This event does not allow vendor registration' });
-      return; // Explicitly return to satisfy TypeScript
+      return;
     }
 
     // Check if vendor deadline has passed
     if (event.vendorDeadline && new Date() > new Date(event.vendorDeadline)) {
       res.status(400).json({ message: 'Vendor registration deadline has passed' });
-      return; // Explicitly return to satisfy TypeScript
+      return;
     }
 
-    // If vendorTypeId is provided, check that vendor type exists and get its details
-    let vendorTypeDetails = null;
+    // Resolve vendor type
+    let vendorTypeDetails: any = null;
     if (vendorTypeId) {
-      vendorTypeDetails = await prisma.vendorType.findUnique({
-        where: { id: Number(vendorTypeId) }
-      });
-
+      vendorTypeDetails = await prisma.vendorType.findUnique({ where: { id: Number(vendorTypeId) } });
       if (!vendorTypeDetails || vendorTypeDetails.eventId !== Number(eventId)) {
         res.status(400).json({ message: 'Invalid vendor type for this event' });
-        return; // Explicitly return to satisfy TypeScript
-      }
-
-      // Check if max vendors limit for this specific vendor type is reached
-      const currentVendorsCount = await prisma.vendorApplication.count({
-        where: {
-          vendorTypeId: Number(vendorTypeId),
-          applicationStatus: 'APPROVED'
-        }
-      });
-
-      if (vendorTypeDetails.maxVendors !== null && currentVendorsCount >= vendorTypeDetails.maxVendors) {
-        res.status(400).json({ message: `Maximum vendor capacity reached for ${vendorTypeDetails.name} vendors` });
-        return; // Explicitly return to satisfy TypeScript
+        return;
       }
     } else if (vendorType) {
-      // Backward compatibility: if vendorTypeId is not provided but vendorType is,
-      // we look for a vendor type with the given name
-      vendorTypeDetails = await prisma.vendorType.findFirst({
-        where: {
-          eventId: Number(eventId),
-          name: vendorType
-        }
-      });
-
+      vendorTypeDetails = await prisma.vendorType.findFirst({ where: { eventId: Number(eventId), name: vendorType } });
       if (!vendorTypeDetails) {
         res.status(400).json({ message: `No vendor type found with name: ${vendorType}` });
-        return; // Explicitly return to satisfy TypeScript
-      }
-
-      // Check if max vendors limit for this specific vendor type is reached
-      const currentVendorsCount = await prisma.vendorApplication.count({
-        where: {
-          vendorTypeId: vendorTypeDetails.id,
-          applicationStatus: 'APPROVED'
-        }
-      });
-
-      if (vendorTypeDetails.maxVendors !== null && currentVendorsCount >= vendorTypeDetails.maxVendors) {
-        res.status(400).json({ message: `Maximum vendor capacity reached for ${vendorTypeDetails.name} vendors` });
-        return; // Explicitly return to satisfy TypeScript
+        return;
       }
     } else {
-      // If neither vendorTypeId nor vendorType is provided, use the first available vendor type
-      vendorTypeDetails = await prisma.vendorType.findFirst({
-        where: { eventId: Number(eventId) }
-      });
-
+      vendorTypeDetails = await prisma.vendorType.findFirst({ where: { eventId: Number(eventId) } });
       if (!vendorTypeDetails) {
         res.status(400).json({ message: 'No vendor types available for this event' });
-        return; // Explicitly return to satisfy TypeScript
+        return;
       }
     }
 
-    // Check if vendor already applied for this event with the same vendor type
+    // Check capacity
+    const currentVendorsCount = await prisma.vendorApplication.count({
+      where: { vendorTypeId: vendorTypeDetails.id, applicationStatus: 'APPROVED' }
+    });
+    if (vendorTypeDetails.maxVendors !== null && currentVendorsCount >= vendorTypeDetails.maxVendors) {
+      res.status(400).json({ message: `Maximum vendor capacity reached for ${vendorTypeDetails.name} vendors` });
+      return;
+    }
+
+    // Check duplicate application for this user/event/stallType
     const existingApplication = await prisma.vendorApplication.findFirst({
-      where: {
-        vendorId: Number(vendorId),
-        eventId: Number(eventId),
-        vendorTypeId: vendorTypeDetails!.id
-      }
+      where: { userId: req.userId, eventId: Number(eventId), vendorTypeId: vendorTypeDetails.id }
     });
 
     if (existingApplication) {
-      res.status(400).json({ message: 'This vendor has already applied for this vendor type at this event' });
-      return; // Explicitly return to satisfy TypeScript
+      res.status(400).json({ message: 'You have already applied for this vendor type at this event' });
+      return;
     }
 
-    // Get the vendor profile to verify it exists and belongs to the user
-    const vendor = await prisma.vendor.findUnique({
-      where: { 
-        id: Number(vendorId),
-        // userId: req.userId! // Ensure vendor belongs to current user
-      }
-    });
+    // Look up user's saved Vendor business card (optional — for email + vendorId reference)
+    const savedVendorCard = await prisma.vendor.findFirst({ where: { userId: req.userId! } });
 
-    if (!vendor) {
-      res.status(403).json({ message: 'You do not have permission to apply with this vendor profile' });
-      return; // Explicitly return to satisfy TypeScript
-    }
+    // Calculate service charge (platform fee), processing fee, and net amount
+    const serviceFeePercent = event.organization?.serviceFeePercent ?? 5.0;
+    const absorbFee = event.organization?.absorbFee ?? false;
+    const baseFee = vendorTypeDetails!.fee || 0;
 
-    // Create vendor application
+    const platformFee = baseFee > 0 ? Math.round(baseFee * (serviceFeePercent / 100)) : 0;
+    const processingFee = baseFee > 0 ? Math.round((baseFee * 0.015) + 100) : 0;
+
+    // Vendor pays booth fee + service fee if not absorbed
+    const calculatedPaymentAmount = absorbFee ? baseFee : (baseFee + platformFee);
+    const netAmount = absorbFee
+      ? Math.max(0, baseFee - platformFee - processingFee)
+      : Math.max(0, baseFee - processingFee);
+
+    // Determine initial status based on event auto-approval settings
+    const initialStatus = (event as any).vendorApprovalMode === 'auto' ? 'APPROVED' : 'PENDING';
+
+    // Create vendor application with snapshot of business details
     const vendorApplication = await prisma.vendorApplication.create({
       data: {
-        vendorId: Number(vendorId),
-        userId: req.userId!, // Use the current user as the applicant
+        userId: req.userId!,
         eventId: Number(eventId),
-        vendorTypeId: vendorTypeDetails!.id, // Reference the vendor type
-        applicationStatus: 'PENDING', // Pending approval by organizer
-        paymentAmount: paymentAmount || null,
-        paymentStatus: paymentAmount ? 'PENDING' : 'PAID' // Mark as paid if no payment required
+        vendorTypeId: vendorTypeDetails!.id,
+        vendorId: savedVendorCard ? savedVendorCard.id : null,
+        // Snapshot fields — editable per event, stored independently
+        businessName: businessName || savedVendorCard?.businessName || null,
+        businessEmail: businessEmail || savedVendorCard?.contactEmail || null,
+        businessPhone: businessPhone || savedVendorCard?.contactPhone || null,
+        description: description || savedVendorCard?.description || null,
+        category: category || savedVendorCard?.category || null,
+        staffCount: staffCount || null,
+        applicationStatus: initialStatus as any,
+        paymentAmount: paymentAmount || calculatedPaymentAmount,
+        paymentReference: paymentReference || null,
+        paymentStatus: paymentReference ? 'PAID' : (calculatedPaymentAmount === 0 ? 'PAID' : 'PENDING'),
+        platformFee,
+        processingFee,
+        netAmount,
       }
     });
 
-    res.status(201).json({
-      message: 'Vendor application submitted successfully',
-      vendorApplication
-    });
-    return; // Explicitly return to satisfy TypeScript
+    // Send application confirmation email
+    try {
+      const user = await prisma.user.findUnique({ where: { id: req.userId! } });
+      if (user?.email) {
+        const { generateVendorApplicationEmail, sendEmail } = await import('../services/email');
+        const emailContent = generateVendorApplicationEmail(user.email, {
+          eventTitle: event.title,
+          businessName: businessName || savedVendorCard?.businessName || 'Your Business',
+          stallType: vendorTypeDetails!.name || 'General Stall',
+        });
+        await sendEmail({ to: user.email, subject: emailContent.subject, html: emailContent.html, text: emailContent.text });
+      }
+    } catch (err) {
+      console.error('Failed to send vendor application email:', err);
+    }
+
+    res.status(201).json({ message: 'Vendor application submitted successfully', vendorApplication });
+    return;
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
-    return; // Explicitly return to satisfy TypeScript
+    return;
   }
 };
 
@@ -149,8 +164,11 @@ export const getVendorApplications = async (req: Request, res: Response) => {
       whereClause.eventId = Number(eventId);
     }
 
-    if (applicationStatus !== undefined) {
-      whereClause.applicationStatus = applicationStatus === 'true';
+    if (applicationStatus) {
+      const statusString = String(applicationStatus).toUpperCase();
+      if (['PENDING', 'APPROVED', 'REJECTED'].includes(statusString)) {
+        whereClause.applicationStatus = statusString;
+      }
     }
 
     // If organizerId is provided, only show applications for events they organize
@@ -173,38 +191,20 @@ export const getVendorApplications = async (req: Request, res: Response) => {
     const vendorApplications = await prisma.vendorApplication.findMany({
       where: whereClause,
       include: {
-        event: {
-          select: {
-            id: true,
-            title: true,
-            startDate: true
-          }
-        },
-        vendor: {
-          select: {
-            id: true,
-            businessName: true,
-            description: true,
-            contactEmail: true
-          }
-        },
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true
-          }
-        }
-      }
+        event: { select: { id: true, title: true, startDate: true } },
+        vendorType: { select: { id: true, name: true, fee: true } },
+        vendor: { select: { id: true, businessName: true, description: true, contactEmail: true } },
+        user: { select: { id: true, firstName: true, lastName: true, email: true } }
+      },
+      orderBy: { appliedAt: 'desc' }
     });
 
     res.json(vendorApplications);
-    return; // Explicitly return to satisfy TypeScript
+    return;
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
-    return; // Explicitly return to satisfy TypeScript
+    return;
   }
 };
 
@@ -326,47 +326,53 @@ export const updateVendorApplicationStatus = async (req: AuthRequest, res: Respo
   }
 };
 
-// Create a vendor profile
+// Get the current user's vendor business card (their single profile)
+export const getMyVendorProfile = async (req: AuthRequest, res: Response) => {
+  try {
+    const vendor = await prisma.vendor.findFirst({
+      where: { userId: req.userId! }
+    });
+    // Return null if not set yet — frontend will show empty form
+    res.json(vendor || null);
+    return;
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error' });
+    return;
+  }
+};
+
+// Save or update the user's vendor business card (upsert — one per user)
 export const createVendorProfile = async (req: AuthRequest, res: Response) => {
   try {
     const { businessName, description, contactEmail, contactPhone, website, category } = req.body;
 
-    // Check if vendor with this business name already exists for this user
-    const existingVendor = await prisma.vendor.findFirst({
-      where: {
-        userId: req.userId!,
-        businessName
-      }
-    });
-
-    if (existingVendor) {
-      res.status(400).json({ message: 'A vendor profile with this business name already exists' });
-      return; // Explicitly return to satisfy TypeScript
+    if (!businessName || !contactEmail) {
+      res.status(400).json({ message: 'Business name and contact email are required' });
+      return;
     }
 
-    // Create vendor profile
-    const vendor = await prisma.vendor.create({
-      data: {
-        userId: req.userId!,
-        businessName,
-        description,
-        contactEmail,
-        contactPhone,
-        website,
-        category,
-        isVerified: false // Pending verification
-      }
-    });
+    // Upsert — user can only have one business card
+    const existing = await prisma.vendor.findFirst({ where: { userId: req.userId! } });
 
-    res.status(201).json({
-      message: 'Vendor profile created successfully',
+    const vendor = existing
+      ? await prisma.vendor.update({
+          where: { id: existing.id },
+          data: { businessName, description, contactEmail, contactPhone, website, category }
+        })
+      : await prisma.vendor.create({
+          data: { userId: req.userId!, businessName, description, contactEmail, contactPhone, website, category, isVerified: false }
+        });
+
+    res.status(existing ? 200 : 201).json({
+      message: existing ? 'Vendor profile updated' : 'Vendor profile created',
       vendor
     });
-    return; // Explicitly return to satisfy TypeScript
+    return;
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
-    return; // Explicitly return to satisfy TypeScript
+    return;
   }
 };
 

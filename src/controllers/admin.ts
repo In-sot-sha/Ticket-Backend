@@ -7,7 +7,7 @@ const paidOrderFilter = { status: 'PAID' as const };
 
 export const getDashboardStats = async (_req: AuthRequest, res: Response) => {
   try {
-    const [totalUsers, pendingHosts, verifiedHosts, totalEvents, totalTickets, revenueAgg, openTickets] =
+    const [totalUsers, pendingHosts, verifiedHosts, totalEvents, totalTickets, revenueAgg, vendorAgg, openTickets] =
       await Promise.all([
         prisma.user.count(),
         prisma.organization.count({ where: { isVerified: false, rejectedAt: null } }),
@@ -19,8 +19,19 @@ export const getDashboardStats = async (_req: AuthRequest, res: Response) => {
           _sum: { totalAmount: true, platformFee: true, processingFee: true, netAmount: true },
           _count: true,
         }),
+        prisma.vendorApplication.aggregate({
+          where: { paymentStatus: 'PAID' },
+          _sum: { paymentAmount: true, platformFee: true, processingFee: true, netAmount: true },
+          _count: true,
+        }),
         prisma.supportTicket.count({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
       ]);
+
+    const totalOrdersCount = (revenueAgg._count ?? 0) + (vendorAgg._count ?? 0);
+    const totalGmv = (revenueAgg._sum.totalAmount ?? 0) + (vendorAgg._sum.paymentAmount ?? 0);
+    const platformRevenue = (revenueAgg._sum.platformFee ?? 0) + (vendorAgg._sum.platformFee ?? 0);
+    const processingFees = (revenueAgg._sum.processingFee ?? 0) + (vendorAgg._sum.processingFee ?? 0);
+    const organizerPayouts = (revenueAgg._sum.netAmount ?? 0) + (vendorAgg._sum.netAmount ?? 0);
 
     return res.json({
       totalUsers,
@@ -28,11 +39,11 @@ export const getDashboardStats = async (_req: AuthRequest, res: Response) => {
       verifiedHosts,
       totalEvents,
       totalTickets,
-      totalOrders: revenueAgg._count,
-      totalGmv: revenueAgg._sum.totalAmount ?? 0,
-      platformRevenue: revenueAgg._sum.platformFee ?? 0,
-      processingFees: revenueAgg._sum.processingFee ?? 0,
-      organizerPayouts: revenueAgg._sum.netAmount ?? 0,
+      totalOrders: totalOrdersCount,
+      totalGmv,
+      platformRevenue,
+      processingFees,
+      organizerPayouts,
       openSupportTickets: openTickets,
       platformFeePercent: PLATFORM_FEE_RATE * 100,
     });
@@ -51,7 +62,10 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
 
     const where = status && status !== 'all' ? { status: status as any } : {};
 
-    const [orders, total] = await Promise.all([
+    // For vendor applications, filter status by paymentStatus
+    const vendorWhere = status && status !== 'all' ? { paymentStatus: status as any } : {};
+
+    const [orders, totalOrders, vendorApps, totalVendors] = await Promise.all([
       prisma.order.findMany({
         where,
         include: {
@@ -71,34 +85,89 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
           _count: { select: { tickets: true } },
         },
         orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
       }),
       prisma.order.count({ where }),
+      prisma.vendorApplication.findMany({
+        where: vendorWhere,
+        include: {
+          user: {
+            select: { id: true, firstName: true, lastName: true, email: true },
+          },
+          event: {
+            select: {
+              id: true,
+              title: true,
+              organization: { select: { id: true, name: true } },
+            },
+          },
+          vendorType: {
+            select: { id: true, name: true },
+          },
+        },
+        orderBy: { appliedAt: 'desc' },
+      }),
+      prisma.vendorApplication.count({ where: vendorWhere }),
     ]);
 
+    // Format all to a common transaction representation
+    const formattedOrders = orders.map((o: any) => ({
+      id: `T-${o.id}`,
+      txId: o.id,
+      type: 'TICKET',
+      totalAmount: o.totalAmount,
+      platformFee: o.platformFee,
+      processingFee: o.processingFee,
+      netAmount: o.netAmount,
+      status: o.status,
+      purchaseType: o.purchaseType,
+      createdAt: o.createdAt,
+      detail: `${o._count.tickets} ticket${o._count.tickets !== 1 ? 's' : ''}`,
+      buyer: o.user
+        ? { id: o.user.id, name: `${o.user.firstName} ${o.user.lastName}`.trim(), email: o.user.email }
+        : null,
+      event: o.event
+        ? {
+            id: o.event.id,
+            title: o.event.title,
+            organization: o.event.organization?.name ?? null,
+          }
+        : null,
+    }));
+
+    const formattedVendors = vendorApps.map((v: any) => ({
+      id: `V-${v.id}`,
+      txId: v.id,
+      type: 'VENDOR',
+      totalAmount: v.paymentAmount ?? 0,
+      platformFee: v.platformFee ?? 0,
+      processingFee: v.processingFee ?? 0,
+      netAmount: v.netAmount ?? 0,
+      status: v.paymentStatus,
+      purchaseType: 'ONLINE',
+      createdAt: v.appliedAt,
+      detail: `Vendor Booth (${v.vendorType?.name ?? 'General'})`,
+      buyer: v.user
+        ? { id: v.user.id, name: `${v.user.firstName} ${v.user.lastName}`.trim(), email: v.user.email }
+        : null,
+      event: v.event
+        ? {
+            id: v.event.id,
+            title: v.event.title,
+            organization: v.event.organization?.name ?? null,
+          }
+        : null,
+    }));
+
+    // Merge and sort by date descending
+    const merged = [...formattedOrders, ...formattedVendors].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    const total = totalOrders + totalVendors;
+    const paginated = merged.slice(skip, skip + limit);
+
     return res.json({
-      transactions: orders.map((o: any) => ({
-        id: o.id,
-        totalAmount: o.totalAmount,
-        platformFee: o.platformFee,
-        processingFee: o.processingFee,
-        netAmount: o.netAmount,
-        status: o.status,
-        purchaseType: o.purchaseType,
-        createdAt: o.createdAt,
-        ticketCount: o._count.tickets,
-        buyer: o.user
-          ? { id: o.user.id, name: `${o.user.firstName} ${o.user.lastName}`.trim(), email: o.user.email }
-          : null,
-        event: o.event
-          ? {
-              id: o.event.id,
-              title: o.event.title,
-              organization: o.event.organization?.name ?? null,
-            }
-          : null,
-      })),
+      transactions: paginated,
       pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     });
   } catch (error) {
@@ -109,16 +178,26 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
 
 export const getRevenue = async (_req: AuthRequest, res: Response) => {
   try {
-    const [agg, monthlyRaw, byEventRaw] = await Promise.all([
+    const [aggOrders, aggVendors, monthlyOrders, monthlyVendors, byEventOrders, byEventVendors] = await Promise.all([
       prisma.order.aggregate({
         where: paidOrderFilter,
         _sum: { totalAmount: true, platformFee: true, processingFee: true, netAmount: true },
+        _count: true,
+      }),
+      prisma.vendorApplication.aggregate({
+        where: { paymentStatus: 'PAID' },
+        _sum: { paymentAmount: true, platformFee: true, processingFee: true, netAmount: true },
         _count: true,
       }),
       prisma.order.findMany({
         where: paidOrderFilter,
         select: { createdAt: true, totalAmount: true, platformFee: true, netAmount: true },
         orderBy: { createdAt: 'asc' },
+      }),
+      prisma.vendorApplication.findMany({
+        where: { paymentStatus: 'PAID' },
+        select: { appliedAt: true, paymentAmount: true, platformFee: true, netAmount: true },
+        orderBy: { appliedAt: 'asc' },
       }),
       prisma.order.findMany({
         where: paidOrderFilter,
@@ -129,10 +208,25 @@ export const getRevenue = async (_req: AuthRequest, res: Response) => {
           event: { select: { id: true, title: true } },
         },
       }),
+      prisma.vendorApplication.findMany({
+        where: { paymentStatus: 'PAID' },
+        select: {
+          paymentAmount: true,
+          platformFee: true,
+          netAmount: true,
+          event: { select: { id: true, title: true } },
+        },
+      }),
     ]);
 
+    const totalOrdersCount = aggOrders._count + aggVendors._count;
+    const totalGmv = (aggOrders._sum.totalAmount ?? 0) + (aggVendors._sum.paymentAmount ?? 0);
+    const platformRevenue = (aggOrders._sum.platformFee ?? 0) + (aggVendors._sum.platformFee ?? 0);
+    const processingFees = (aggOrders._sum.processingFee ?? 0) + (aggVendors._sum.processingFee ?? 0);
+    const organizerPayouts = (aggOrders._sum.netAmount ?? 0) + (aggVendors._sum.netAmount ?? 0);
+
     const monthlyMap = new Map<string, { gmv: number; platformFee: number; netAmount: number; orders: number }>();
-    for (const o of monthlyRaw) {
+    for (const o of monthlyOrders) {
       const key = `${o.createdAt.getFullYear()}-${String(o.createdAt.getMonth() + 1).padStart(2, '0')}`;
       const cur = monthlyMap.get(key) ?? { gmv: 0, platformFee: 0, netAmount: 0, orders: 0 };
       cur.gmv += o.totalAmount;
@@ -141,9 +235,18 @@ export const getRevenue = async (_req: AuthRequest, res: Response) => {
       cur.orders += 1;
       monthlyMap.set(key, cur);
     }
+    for (const v of monthlyVendors) {
+      const key = `${v.appliedAt.getFullYear()}-${String(v.appliedAt.getMonth() + 1).padStart(2, '0')}`;
+      const cur = monthlyMap.get(key) ?? { gmv: 0, platformFee: 0, netAmount: 0, orders: 0 };
+      cur.gmv += v.paymentAmount ?? 0;
+      cur.platformFee += v.platformFee ?? 0;
+      cur.netAmount += v.netAmount ?? 0;
+      cur.orders += 1;
+      monthlyMap.set(key, cur);
+    }
 
     const eventMap = new Map<number, { eventId: number; title: string; gmv: number; platformFee: number; orders: number }>();
-    for (const o of byEventRaw) {
+    for (const o of byEventOrders) {
       if (!o.event) continue;
       const cur = eventMap.get(o.event.id) ?? {
         eventId: o.event.id,
@@ -157,14 +260,28 @@ export const getRevenue = async (_req: AuthRequest, res: Response) => {
       cur.orders += 1;
       eventMap.set(o.event.id, cur);
     }
+    for (const v of byEventVendors) {
+      if (!v.event) continue;
+      const cur = eventMap.get(v.event.id) ?? {
+        eventId: v.event.id,
+        title: v.event.title,
+        gmv: 0,
+        platformFee: 0,
+        orders: 0,
+      };
+      cur.gmv += v.paymentAmount ?? 0;
+      cur.platformFee += v.platformFee ?? 0;
+      cur.orders += 1;
+      eventMap.set(v.event.id, cur);
+    }
 
     return res.json({
       summary: {
-        totalOrders: agg._count,
-        totalGmv: agg._sum.totalAmount ?? 0,
-        platformRevenue: agg._sum.platformFee ?? 0,
-        processingFees: agg._sum.processingFee ?? 0,
-        organizerPayouts: agg._sum.netAmount ?? 0,
+        totalOrders: totalOrdersCount,
+        totalGmv,
+        platformRevenue,
+        processingFees,
+        organizerPayouts,
         platformFeePercent: PLATFORM_FEE_RATE * 100,
       },
       monthly: Array.from(monthlyMap.entries()).map(([month, data]) => ({ month, ...data })),
@@ -510,6 +627,281 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
     });
 
     return res.json({ message: 'User role updated', user });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getAdminEvents = async (req: AuthRequest, res: Response) => {
+  try {
+    const search = (req.query.search as string) || '';
+    const events = await prisma.event.findMany({
+      where: {
+        ...(search
+          ? {
+              OR: [
+                { title: { contains: search } },
+                { description: { contains: search } },
+              ],
+            }
+          : {}),
+      },
+      include: {
+        organization: {
+          select: { id: true, name: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    return res.json(events);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const promoteEvent = async (req: AuthRequest, res: Response) => {
+  try {
+    const eventId = Number(req.params.id);
+    const { isPromoted, promotedUntil } = req.body;
+
+    if (isNaN(eventId) || eventId <= 0) {
+      return res.status(400).json({ message: 'Invalid event ID' });
+    }
+
+    const event = await prisma.event.update({
+      where: { id: eventId },
+      data: {
+        isPromoted: Boolean(isPromoted),
+        promotedUntil: promotedUntil ? new Date(promotedUntil) : null,
+      },
+    });
+
+    return res.json({ message: 'Event promotion updated', event });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const updateOrganizationFee = async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { serviceFeePercent, absorbFee } = req.body;
+
+    if (serviceFeePercent !== undefined && (typeof serviceFeePercent !== 'number' || serviceFeePercent < 0 || serviceFeePercent > 100)) {
+      return res.status(400).json({ message: 'Service fee percent must be a number between 0 and 100' });
+    }
+
+    const organization = await prisma.organization.findUnique({
+      where: { id },
+    });
+
+    if (!organization) {
+      return res.status(404).json({ message: 'Organization not found' });
+    }
+
+    const updated = await prisma.organization.update({
+      where: { id },
+      data: {
+        ...(serviceFeePercent !== undefined ? { serviceFeePercent } : {}),
+        ...(absorbFee !== undefined ? { absorbFee } : {}),
+      },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            phone: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    console.log(`[ADMIN AUDIT] Admin (ID: ${req.userId}) updated Organization (ID: ${id}) fee configuration to serviceFeePercent: ${serviceFeePercent}%, absorbFee: ${absorbFee}`);
+
+    return res.json({
+      message: 'Organization fee configuration updated successfully',
+      organization: updated,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getPayoutRequests = async (req: AuthRequest, res: Response) => {
+  try {
+    const status = req.query.status as string | undefined;
+    const payouts = await prisma.payout.findMany({
+      where: status && status !== 'all' ? { status: status as any } : {},
+      include: {
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            owner: { select: { id: true, firstName: true, lastName: true, email: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return res.json(payouts);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const approvePayout = async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const payout = await prisma.payout.findUnique({
+      where: { id },
+      include: { organization: true },
+    });
+
+    if (!payout) {
+      return res.status(404).json({ message: 'Payout request not found.' });
+    }
+
+    if (payout.status !== 'PENDING') {
+      return res.status(400).json({ message: 'Payout request has already been processed.' });
+    }
+
+    const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+    if (!paystackSecret) {
+      return res.status(500).json({ message: 'Paystack is not configured on this server.' });
+    }
+
+    // Step 1: Fetch Nigeria bank list to resolve bank name to bank code
+    let bankCode = '';
+    try {
+      const bankRes = await fetch('https://api.paystack.co/bank?currency=NGN', {
+        headers: { Authorization: `Bearer ${paystackSecret}` },
+      });
+      const bankData: any = await bankRes.json();
+      if (bankData.status && Array.isArray(bankData.data)) {
+        const queryBank = (payout.bankName || '').toLowerCase().trim();
+        // Try exact match or substring match
+        const foundBank = bankData.data.find(
+          (b: any) =>
+            b.name.toLowerCase() === queryBank ||
+            b.name.toLowerCase().includes(queryBank) ||
+            queryBank.includes(b.name.toLowerCase())
+        );
+        if (foundBank) {
+          bankCode = foundBank.code;
+        }
+      }
+    } catch (bankErr) {
+      console.error('[Paystack Payout] Failed to fetch bank list:', bankErr);
+    }
+
+    if (!bankCode) {
+      return res.status(400).json({
+        message: `Could not resolve bank code for "${payout.bankName}". Please double check the bank name.`,
+      });
+    }
+
+    // Step 2: Create Transfer Recipient
+    let recipientCode = '';
+    try {
+      const recipientRes = await fetch('https://api.paystack.co/transferrecipient', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${paystackSecret}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          type: 'nuban',
+          name: payout.accountName || payout.organization.name,
+          account_number: payout.accountNumber,
+          bank_code: bankCode,
+          currency: 'NGN',
+        }),
+      });
+      const recipientData: any = await recipientRes.json();
+      if (recipientData.status && recipientData.data && recipientData.data.recipient_code) {
+        recipientCode = recipientData.data.recipient_code;
+      } else {
+        return res.status(400).json({
+          message: `Paystack recipient creation failed: ${recipientData.message || 'Unknown error'}`,
+        });
+      }
+    } catch (recipientErr: any) {
+      console.error('[Paystack Payout] Recipient error:', recipientErr);
+      return res.status(500).json({ message: 'Error communicating with Paystack Recipient API.' });
+    }
+
+    // Step 3: Initiate Transfer
+    try {
+      const transferRes = await fetch('https://api.paystack.co/transfer', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${paystackSecret}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          source: 'balance',
+          amount: Math.round(payout.amount * 100), // convert to kobo
+          recipient: recipientCode,
+          reason: `Payout request ref ${payout.reference || payout.id}`,
+        }),
+      });
+      const transferData: any = await transferRes.json();
+      if (transferData.status) {
+        const updatedPayout = await prisma.payout.update({
+          where: { id },
+          data: { status: 'PAID' },
+        });
+        return res.json({
+          message: 'Payout processed and transfer initiated successfully.',
+          payout: updatedPayout,
+          paystack: transferData.data,
+        });
+      } else {
+        return res.status(400).json({
+          message: `Paystack transfer failed: ${transferData.message || 'Unknown error'}`,
+        });
+      }
+    } catch (transferErr: any) {
+      console.error('[Paystack Payout] Transfer error:', transferErr);
+      return res.status(500).json({ message: 'Error initiating transfer via Paystack API.' });
+    }
+  } catch (error) {
+    console.error('[Payout Approval Error]:', error);
+    return res.status(500).json({ message: 'Server error processing payout approval.' });
+  }
+};
+
+export const rejectPayout = async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const payout = await prisma.payout.findUnique({ where: { id } });
+
+    if (!payout) {
+      return res.status(404).json({ message: 'Payout request not found.' });
+    }
+
+    if (payout.status !== 'PENDING') {
+      return res.status(400).json({ message: 'Payout request has already been processed.' });
+    }
+
+    const updatedPayout = await prisma.payout.update({
+      where: { id },
+      data: { status: 'REFUNDED' },
+    });
+
+    return res.json({
+      message: 'Payout request rejected and balance restored.',
+      payout: updatedPayout,
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });

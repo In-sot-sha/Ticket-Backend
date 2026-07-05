@@ -109,7 +109,11 @@ export const verifyGatePin = async (req: Request, res: Response) => {
       return res.status(401).json({ message: 'Invalid PIN. Check the code and try again.' });
     }
 
-    return res.json({ valid: true, staffName: record.staffName });
+    return res.json({ 
+      valid: true, 
+      staffName: record.staffName, 
+      organizationId: record.organizationId 
+    });
   } catch (err) {
     console.error('[GatePin] verifyGatePin error:', err);
     return res.status(500).json({ message: 'Server error.' });

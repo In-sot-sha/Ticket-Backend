@@ -7,7 +7,8 @@ import {
   createVendorProfile,
   getUserVendorProfiles,
   updateVendorProfile,
-  deleteVendorProfile
+  deleteVendorProfile,
+  getMyVendorProfile
 } from '../controllers/vendor';
 import { verifyToken, requireRole } from '../middleware/auth';
 
@@ -17,6 +18,7 @@ const router = Router();
 router.get('/', getVendorApplications);
 
 // Protected routes for vendor profiles
+router.get('/profiles/me', verifyToken, getMyVendorProfile);
 router.post('/profiles', verifyToken, createVendorProfile);
 router.get('/profiles', verifyToken, getUserVendorProfiles);
 router.get('/profiles/:id', verifyToken, getVendorApplicationById);

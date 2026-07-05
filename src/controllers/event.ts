@@ -59,6 +59,24 @@ function parseBoolean(value: unknown): boolean {
   return value === true || value === 'true';
 }
 
+function formatEventWithSettings(event: any) {
+  if (!event) return event;
+  return {
+    ...event,
+    vendorSettings: {
+      allowVendors: event.allowVendors,
+      approvalMode: event.vendorApprovalMode || 'auto',
+      stallTypes: event.vendorTypes?.map((vt: any) => ({
+        id: vt.id,
+        name: vt.name,
+        price: vt.fee,
+        maxStalls: vt.maxVendors,
+        description: ''
+      })) || []
+    }
+  };
+}
+
 type TicketTypeRow = { id: number; name: string; price: number; quantity: number | null };
 
 function getEventPhase(isPublished: boolean, startDate: Date, endDate: Date): string {
@@ -140,7 +158,7 @@ async function userCanManageEvent(userId: number, eventId: number) {
 // Get all events
 export const getEvents = async (req: Request, res: Response) => {
   try {
-    const { search, location, date, category, page = 1, limit = 10 } = req.query;
+    const { search, location, date, category, promoted, organizationId, page = 1, limit = 10 } = req.query;
 
     // Validate pagination parameters
     const pageNum = Math.max(1, Number(page));
@@ -151,11 +169,27 @@ export const getEvents = async (req: Request, res: Response) => {
       isPublished: true // Only return published events
     };
 
-    const cacheKey = `events_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}`;
+    const cacheKey = `events_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}_${promoted || ''}_${organizationId || ''}`;
 
     const cachedData = await cacheGet(cacheKey);
     if (cachedData) {
       return res.json(cachedData);
+    }
+
+    if (organizationId) {
+      whereClause.organizationId = Number(organizationId);
+    }
+
+    if (promoted === 'true') {
+      whereClause.isPromoted = true;
+      whereClause.AND = [
+        {
+          OR: [
+            { promotedUntil: null },
+            { promotedUntil: { gte: new Date() } }
+          ]
+        }
+      ];
     }
 
     if (search) {
@@ -187,7 +221,9 @@ export const getEvents = async (req: Request, res: Response) => {
         organization: {
           select: {
             id: true,
-            name: true
+            name: true,
+            logo: true,
+            isVerified: true
           }
         },
         ticketTypes: {
@@ -252,7 +288,16 @@ export const getEvent = async (req: Request, res: Response) => {
 
     const eventIncludes = {
       organization: {
-        select: { id: true, name: true }
+        select: { 
+          id: true, 
+          name: true,
+          logo: true,
+          description: true,
+          website: true,
+          isVerified: true,
+          serviceFeePercent: true,
+          absorbFee: true
+        }
       },
       ticketTypes: {
         select: {
@@ -308,10 +353,12 @@ export const getEvent = async (req: Request, res: Response) => {
       return res.status(404).json({ message: 'Event not found' });
     }
 
-    // Cache for 2 minutes
-    await cacheSet(cacheKey, event, 120);
+    const formattedEvent = formatEventWithSettings(event);
 
-    return res.json(event);
+    // Cache for 2 minutes
+    await cacheSet(cacheKey, formattedEvent, 120);
+
+    return res.json(formattedEvent);
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -347,6 +394,8 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       highlights,
       latitude,
       longitude,
+      imageUrl: bodyImageUrl,
+      vendorSettings, // Added vendorSettings
     } = req.body;
 
     const parsedTicketTypes = parseJsonField<Array<{
@@ -358,12 +407,24 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       badgeText?: string;
       ticketHeadline?: string;
       venueLabel?: string;
+      maxPerPerson?: string | number;
     }>>(ticketTypes);
-    const parsedVendorTypes = parseJsonField<Array<{ name?: string; stallType?: string; fee?: string | number; maxVendors?: string | number }>>(vendorTypes);
+    
+    const parsedVendorSettings = parseJsonField<{
+      allowVendors?: boolean;
+      stallTypes?: Array<{ id?: string; name?: string; price?: string | number; maxStalls?: string | number; description?: string }>;
+      allowedRoles?: string[];
+      approvalMode?: string;
+      applicationDeadline?: number;
+    }>(vendorSettings);
+
+    const parsedVendorTypes: any[] = parsedVendorSettings?.stallTypes || parseJsonField<any[]>(vendorTypes) || [];
+    const resolvedAllowVendors = parsedVendorSettings?.allowVendors ?? parseBoolean(allowVendors);
+    
     const parsedAmenities = parseJsonField<string[]>(amenities);
     const parsedHighlights = parseJsonField<Array<{ icon: string; label: string }>>(highlights);
 
-    let imageUrl = null;
+    let imageUrl = bodyImageUrl || null;
 
     // If an image file was uploaded
     if (req.file) {
@@ -423,8 +484,14 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
         highlights: parsedHighlights?.length ? JSON.stringify(parsedHighlights) : null,
         isPublished: parseBoolean(isPublished),
         organizationId: orgId, // Use organization ID instead of organizerId
-        allowVendors: parseBoolean(allowVendors),
-        vendorDeadline: vendorDeadline ? new Date(vendorDeadline) : null,
+        category: _category || null,
+        allowVendors: resolvedAllowVendors,
+        vendorApprovalMode: parsedVendorSettings?.approvalMode || 'auto',
+        vendorDeadline: vendorDeadline 
+          ? new Date(vendorDeadline) 
+          : (parsedVendorSettings?.applicationDeadline 
+              ? new Date(new Date(startDate).getTime() - parsedVendorSettings.applicationDeadline * 24 * 60 * 60 * 1000) 
+              : null),
         gateTicketing: parseBoolean(gateTicketing),
         locationType: resolvedLocationType,
         onlineUrl: resolvedLocationType === 'online' ? resolvedOnlineUrl : null,
@@ -446,6 +513,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
             badgeText: ticketType.badgeText || null,
             ticketHeadline: ticketType.ticketHeadline || null,
             venueLabel: ticketType.venueLabel || null,
+            maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
             eventId: event.id
           }
         });
@@ -453,18 +521,18 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
     }
     
     // Create vendor types if provided
-    if (parseBoolean(allowVendors) && parsedVendorTypes?.length) {
+    if (resolvedAllowVendors && parsedVendorTypes?.length) {
       for (const vendorType of parsedVendorTypes) {
         await prisma.vendorType.create({
           data: {
             name: vendorType.name || vendorType.stallType || 'General Vendor',
-            fee: vendorType.fee ? parseFloat(String(vendorType.fee)) : 0,
-            maxVendors: vendorType.maxVendors ? parseInt(String(vendorType.maxVendors), 10) : null,
+            fee: (vendorType.fee || vendorType.price) ? parseFloat(String(vendorType.fee || vendorType.price)) : 0,
+            maxVendors: (vendorType.maxVendors || vendorType.maxStalls) ? parseInt(String(vendorType.maxVendors || vendorType.maxStalls), 10) : null,
             eventId: event.id
           }
         });
       }
-    } else if (parseBoolean(allowVendors) && stallType) {
+    } else if (resolvedAllowVendors && stallType) {
       // Backward compatibility: if vendorTypes is not provided but individual fields are, 
       // create a single vendor type using the old format
       await prisma.vendorType.create({
@@ -486,9 +554,11 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       },
     });
 
+    await cacheFlushPattern('events_*');
+
    return res.status(201).json({
       message: 'Event created successfully',
-      event: eventWithRelations ?? event
+      event: formatEventWithSettings(eventWithRelations ?? event)
     });
   } catch (error) {
     console.error(error);
@@ -533,6 +603,8 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       highlights,
       latitude,
       longitude,
+      imageUrl: bodyImageUrl,
+      vendorSettings, // Added vendorSettings
     } = req.body;
 
     const parsedTicketTypes = parseJsonField<Array<{
@@ -544,8 +616,20 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       badgeText?: string;
       ticketHeadline?: string;
       venueLabel?: string;
+      maxPerPerson?: string | number;
     }>>(ticketTypes);
-    const parsedVendorTypes = parseJsonField<Array<{ name?: string; stallType?: string; fee?: string | number; maxVendors?: string | number }>>(vendorTypes);
+
+    const parsedVendorSettings = parseJsonField<{
+      allowVendors?: boolean;
+      stallTypes?: Array<{ id?: string; name?: string; price?: string | number; maxStalls?: string | number; description?: string }>;
+      allowedRoles?: string[];
+      approvalMode?: string;
+      applicationDeadline?: number;
+    }>(vendorSettings);
+
+    const parsedVendorTypes: any[] = parsedVendorSettings?.stallTypes || parseJsonField<any[]>(vendorTypes) || [];
+    const resolvedAllowVendors = parsedVendorSettings?.allowVendors ?? parseBoolean(allowVendors);
+    
     const parsedAmenities = parseJsonField<string[]>(amenities);
     const parsedHighlights = parseJsonField<Array<{ icon: string; label: string }>>(highlights);
 
@@ -572,6 +656,9 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
     }
 
     let imageUrl = existingEvent.imageUrl; // Keep the existing image URL by default
+    if (bodyImageUrl) {
+      imageUrl = bodyImageUrl;
+    }
 
     // If a new image file was uploaded
     if (req.file) {
@@ -613,8 +700,14 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
         highlights: parsedHighlights?.length ? JSON.stringify(parsedHighlights) : null,
       }),
       isPublished: isPublished !== undefined ? parseBoolean(isPublished) : existingEvent.isPublished,
-      allowVendors: allowVendors !== undefined ? parseBoolean(allowVendors) : existingEvent.allowVendors,
-      vendorDeadline: vendorDeadline ? new Date(vendorDeadline) : existingEvent.vendorDeadline,
+      category: _category2 !== undefined ? _category2 : existingEvent.category,
+      allowVendors: resolvedAllowVendors !== undefined ? resolvedAllowVendors : existingEvent.allowVendors,
+      vendorApprovalMode: parsedVendorSettings?.approvalMode ?? existingEvent.vendorApprovalMode,
+      vendorDeadline: vendorDeadline 
+        ? new Date(vendorDeadline) 
+        : (parsedVendorSettings?.applicationDeadline 
+            ? new Date(new Date(startDate || existingEvent.startDate).getTime() - parsedVendorSettings.applicationDeadline * 24 * 60 * 60 * 1000) 
+            : existingEvent.vendorDeadline),
       gateTicketing: gateTicketing !== undefined ? parseBoolean(gateTicketing) : existingEvent.gateTicketing,
       locationType: resolvedLocationType,
       onlineUrl: resolvedLocationType === 'online' ? resolvedOnlineUrl : null,
@@ -702,6 +795,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
               badgeText: ticketType.badgeText || null,
               ticketHeadline: ticketType.ticketHeadline || null,
               venueLabel: ticketType.venueLabel || null,
+              maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
             },
           });
         } else {
@@ -715,6 +809,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
               badgeText: ticketType.badgeText || null,
               ticketHeadline: ticketType.ticketHeadline || null,
               venueLabel: ticketType.venueLabel || null,
+              maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
               eventId: event.id,
             },
           });
@@ -723,10 +818,11 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
     }
     
     // Update vendor types if provided
-    if (allowVendors !== undefined && parseBoolean(allowVendors)) {
-      // Delete existing vendor types
+    if (resolvedAllowVendors && parsedVendorTypes?.length) {
+      // Very basic implementation: clear and recreate
+      // A more robust implementation would update existing and create new ones
       await prisma.vendorType.deleteMany({
-        where: { eventId: Number(id) }
+        where: { eventId: existingEvent.id }
       });
       
       // Create new vendor types if provided in the new format
@@ -735,8 +831,8 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
           await prisma.vendorType.create({
             data: {
               name: vendorType.name || vendorType.stallType || 'General Vendor',
-              fee: vendorType.fee ? parseFloat(String(vendorType.fee)) : 0,
-              maxVendors: vendorType.maxVendors ? parseInt(String(vendorType.maxVendors), 10) : null,
+              fee: (vendorType.fee || vendorType.price) ? parseFloat(String(vendorType.fee || vendorType.price)) : 0,
+              maxVendors: (vendorType.maxVendors || vendorType.maxStalls) ? parseInt(String(vendorType.maxVendors || vendorType.maxStalls), 10) : null,
               eventId: event.id
             }
           });
@@ -755,9 +851,22 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    const updatedEvent = await prisma.event.findUnique({
+      where: { id: event.id },
+      include: {
+        ticketTypes: true,
+        vendorTypes: true,
+        organization: { select: { id: true, name: true } },
+      }
+    });
+
+    await cacheFlushPattern(`event_${eventId}`);
+    await cacheFlushPattern(`event_${existingEvent.slug}`);
+    await cacheFlushPattern('events_*');
+
     return res.json({
       message: 'Event updated successfully',
-      event
+      event: formatEventWithSettings(updatedEvent ?? event)
     });
   } catch (error) {
     console.error(error);
@@ -795,7 +904,9 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
         organization: {
           select: {
             id: true,
-            name: true
+            name: true,
+            logo: true,
+            isVerified: true
           }
         },
         ticketTypes: {
@@ -893,7 +1004,16 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
     const fullEvent = await prisma.event.findUnique({
       where: { id: eventId },
       include: {
-        organization: { select: { id: true, name: true } },
+        organization: { 
+          select: { 
+            id: true, 
+            name: true,
+            logo: true,
+            description: true,
+            website: true,
+            isVerified: true
+          } 
+        },
         ticketTypes: {
           select: {
             id: true,
@@ -904,6 +1024,14 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
             badgeText: true,
           },
         },
+        vendorTypes: {
+          select: {
+            id: true,
+            name: true,
+            fee: true,
+            maxVendors: true,
+          }
+        }
       },
     });
 
@@ -912,10 +1040,11 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
     }
 
     const stats = await buildEventStats(fullEvent.id, fullEvent.ticketTypes, fullEvent.capacity);
+    const formattedEvent = formatEventWithSettings(fullEvent);
 
     return res.json({
-      ...fullEvent,
-      phase: getEventPhase(fullEvent.isPublished, fullEvent.startDate, fullEvent.endDate),
+      ...formattedEvent,
+      phase: getEventPhase(formattedEvent.isPublished, formattedEvent.startDate, formattedEvent.endDate),
       revenue: stats.actualRevenue,
       attendees: stats.ticketsSold,
       stats,
@@ -1177,6 +1306,10 @@ export const deleteEvent = async (req: AuthRequest, res: Response) => {
     await prisma.event.delete({
       where: { id: eventId }
     });
+
+    await cacheFlushPattern(`event_${eventId}`);
+    await cacheFlushPattern(`event_${existingEvent.slug}`);
+    await cacheFlushPattern('events_*');
 
     return res.json({ message: 'Event deleted successfully' });
   } catch (error) {

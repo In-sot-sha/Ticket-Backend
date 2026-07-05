@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -120,6 +120,10 @@ model Organization {
   vatNumber       String?
   businessAddress String? @db.Text
 
+  // Fee settings
+  serviceFeePercent Float   @default(5.0)
+  absorbFee         Boolean @default(false)
+
   // Relations
   owner     User                     @relation("OwnedOrganizations", fields: [ownerId], references: [id])
   members   OrganizationMember[]
@@ -174,6 +178,8 @@ model Event {
   amenities      String?  @db.Text // JSON array of strings
   highlights     String?  @db.Text // JSON array of { icon, label }
   isPublished    Boolean  @default(false)
+  isPromoted     Boolean  @default(false)
+  promotedUntil  DateTime?
   latitude       Float? // GPS latitude for event location
   longitude      Float? // GPS longitude for event location
   createdAt      DateTime @default(now())
@@ -191,9 +197,11 @@ model Event {
   // Ticket types
   ticketTypes TicketType[]
 
-  // Vendors
   allowVendors       Boolean             @default(false)
   vendorDeadline     DateTime?
+  vendorApprovalMode String              @default("auto") // "auto" or "manual"
+  refundPolicy       String?             @db.Text
+  socialLinks        Json?
   gateTicketing      Boolean             @default(false) // Allow gate ticketing
   vendorTypes        VendorType[] // Support multiple vendor types per event
   vendorApplications VendorApplication[]
@@ -232,6 +240,9 @@ model Payout {
   amount         Float
   status         PaymentStatus @default(PENDING)
   reference      String?
+  bankName       String?
+  accountNumber  String?
+  accountName    String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
@@ -258,27 +269,38 @@ model Vendor {
   applications VendorApplication[]
 }
 
-// Vendor applications model (for managing vendor applications to events)
 model VendorApplication {
   id                Int               @id @default(autoincrement())
-  vendorId          Int // The vendor profile applying
-  userId            Int // The user who made the application
+  vendorId          Int?              // Optional reference to user's saved Vendor business card
+  userId            Int               // The user who made the application
   eventId           Int
-  vendorTypeId      Int? // Reference to the specific vendor type (nullable for backward compatibility during migration)
+  vendorTypeId      Int?              // Reference to the specific vendor type
+  // Snapshot of business details at time of application (editable per event)
+  businessName      String?
+  businessEmail     String?
+  businessPhone     String?
+  description       String?
+  category          String?
+  staffCount        String?
   applicationStatus ApplicationStatus @default(PENDING)
   paymentAmount     Float?
   paymentStatus     PaymentStatus     @default(PENDING)
+  paymentReference  String?
+  platformFee       Float             @default(0)
+  processingFee     Float             @default(0)
+  netAmount         Float             @default(0)
+  stallNumber       String?
   appliedAt         DateTime          @default(now())
   approvedAt        DateTime?
   rejectedAt        DateTime?
 
   // Relations
-  vendor     Vendor      @relation(fields: [vendorId], references: [id])
+  vendor     Vendor?     @relation(fields: [vendorId], references: [id])
   user       User        @relation("VendorApplicationsMade", fields: [userId], references: [id])
   event      Event       @relation(fields: [eventId], references: [id])
-  vendorType VendorType? @relation(fields: [vendorTypeId], references: [id]) // Relation to vendor type
+  vendorType VendorType? @relation(fields: [vendorTypeId], references: [id])
 
-  @@unique([vendorId, eventId])
+  @@unique([userId, eventId, vendorTypeId])
 }
 
 model TicketType {
@@ -292,6 +314,7 @@ model TicketType {
   badgeText      String? // Custom label on the ticket stub (defaults to ticket name)
   ticketHeadline String? // e.g. "COME AND JOIN"
   venueLabel     String? // e.g. "LIVE AT"
+  maxPerPerson   Int?     @default(5)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

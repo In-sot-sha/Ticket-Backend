@@ -1,15 +1,18 @@
 import { Router } from 'express';
 import { 
   createTicket, 
-  getTickets, 
+  getEventAttendanceTickets,
+  getAdminTickets,
+  getMyTickets,
   getTicketById, 
   validateTicket, 
   purchaseTicket,
-    requestTicketRecovery,
+  requestTicketRecovery,
   verifyTicketRecovery,
-  checkoutGuest
+  checkoutGuest,
+  manualTicket,
 } from '../controllers/ticket';
-import { verifyToken, optionalVerifyToken } from '../middleware/auth';
+import { verifyToken, optionalVerifyToken, requireRole } from '../middleware/auth';
 import { otpRequestRateLimit } from '../middleware/rateLimit';
 
 const router = Router();
@@ -18,13 +21,15 @@ const router = Router();
 router.post('/checkout/guest', checkoutGuest);
 router.post('/validate', validateTicket); // For gate scanning
 
-// Semi-private: Can view your own tickets without auth, or if authenticated with userId param
-router.get('/', optionalVerifyToken, getTickets); // Now requires auth OR userId matches current user
-router.get('/event/:eventId', getTickets); // Get all tickets for an event (for attendance)
-router.get('/:id', getTicketById);
+// Ticket queries with distinct routes
+router.get('/my-tickets', verifyToken, getMyTickets); // Logged-in user's own tickets
+router.get('/admin/all', verifyToken, requireRole('ADMIN'), getAdminTickets); // Platform owners/admins view all tickets
+router.get('/event/:eventId', verifyToken, getEventAttendanceTickets); // Organizer event attendance tickets
+router.get('/:id', verifyToken, getTicketById);
 
 // Protected routes (authentication required)
 router.post('/purchase', verifyToken, purchaseTicket);
+router.post('/manual', verifyToken, manualTicket); // Organizer gate-sale registration
 router.post('/', verifyToken, createTicket); // For organizers to create tickets
 router.post('/recover/request', otpRequestRateLimit(), requestTicketRecovery);
 router.post('/recover/verify', verifyTicketRecovery);

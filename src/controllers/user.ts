@@ -88,7 +88,7 @@ export const login = async (req: Request, res: Response) => {
 
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { ownedOrganizations: true },
+      include: { ownedOrganizations: true, vendorProfiles: true },
     });
 
     if (!user) return res.status(400).json({ message: 'Invalid email or password' });
@@ -101,7 +101,15 @@ export const login = async (req: Request, res: Response) => {
     return res.json({
       message: 'Login successful',
       token,
-      user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role, ownedOrganizations: user.ownedOrganizations || [] },
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        firstName: user.firstName, 
+        lastName: user.lastName, 
+        role: user.role, 
+        ownedOrganizations: user.ownedOrganizations || [], 
+        vendorProfile: user.vendorProfiles?.[0] || null 
+      },
     });
   } catch (error) {
     console.error(error);
@@ -115,10 +123,11 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.userId! },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
     if (!user) return res.status(404).json({ message: 'User not found' });
-    return res.json(user);
+    const { vendorProfiles, ...rest } = user as any;
+    return res.json({ ...rest, vendorProfile: vendorProfiles?.[0] || null });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -133,9 +142,10 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.update({
       where: { id: req.userId! },
       data: { firstName, lastName, phone, avatar },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
-    return res.json({ message: 'Profile updated successfully', user });
+    const { vendorProfiles, ...rest } = user as any;
+    return res.json({ message: 'Profile updated successfully', user: { ...rest, vendorProfile: vendorProfiles?.[0] || null } });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -152,10 +162,11 @@ export const uploadAvatar = async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.update({
       where: { id: req.userId! },
       data: { avatar: avatarUrl },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
+    const { vendorProfiles, ...rest } = user as any;
 
-    return res.json({ message: 'Avatar uploaded successfully', url: avatarUrl, user });
+    return res.json({ message: 'Avatar uploaded successfully', url: avatarUrl, user: { ...rest, vendorProfile: vendorProfiles?.[0] || null } });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Failed to upload avatar' });
@@ -324,13 +335,13 @@ export const googleLogin = async (req: Request, res: Response) => {
     // Find or create the user
     let user = await prisma.user.findUnique({
       where: { authProviderId: sub },
-      include: { ownedOrganizations: true },
+      include: { ownedOrganizations: true, vendorProfiles: true },
     });
 
     if (!user) {
       user = await prisma.user.findUnique({
         where: { email },
-        include: { ownedOrganizations: true },
+        include: { ownedOrganizations: true, vendorProfiles: true },
       });
 
       if (user) {
@@ -338,13 +349,13 @@ export const googleLogin = async (req: Request, res: Response) => {
         user = await prisma.user.update({
           where: { id: user.id },
           data: { authProvider: 'google', authProviderId: sub, isVerified: user.isVerified || emailVerified },
-          include: { ownedOrganizations: true },
+          include: { ownedOrganizations: true, vendorProfiles: true },
         });
       } else {
         // Brand-new user
         user = await prisma.user.create({
           data: { email, firstName: given_name, lastName: family_name, avatar: picture, role: 'USER', isVerified: emailVerified, authProvider: 'google', authProviderId: sub },
-          include: { ownedOrganizations: true },
+          include: { ownedOrganizations: true, vendorProfiles: true },
         });
         isNewUser = true;
       }
@@ -365,7 +376,16 @@ export const googleLogin = async (req: Request, res: Response) => {
     return res.json({
       message: 'Google login successful',
       token,
-      user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role, avatar: user.avatar, ownedOrganizations: user.ownedOrganizations || [] },
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        firstName: user.firstName, 
+        lastName: user.lastName, 
+        role: user.role, 
+        avatar: user.avatar, 
+        ownedOrganizations: user.ownedOrganizations || [], 
+        vendorProfile: user.vendorProfiles?.[0] || null 
+      },
     });
   } catch (error) {
     console.error('[googleLogin] Error:', error);
@@ -418,7 +438,8 @@ export const refreshToken = async (req: Request, res: Response) => {
 
     // Verify user still exists in database
     const user = await prisma.user.findUnique({
-      where: { id: userId }
+      where: { id: userId },
+      include: { vendorProfiles: true }
     });
 
     if (!user) {
@@ -455,7 +476,8 @@ export const refreshToken = async (req: Request, res: Response) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
-        avatar: user.avatar
+        avatar: user.avatar,
+        vendorProfile: user.vendorProfiles?.[0] || null
       }
     });
   } catch (error) {

@@ -302,10 +302,54 @@ export const generateWelcomeEmail = (userName: string) => {
   };
 };
 
+/**
+ * Vendor application confirmation email template
+ */
+export const generateVendorApplicationEmail = (
+  userEmail: string,
+  applicationData: {
+    eventTitle: string;
+    businessName: string;
+    stallType: string;
+  }
+) => {
+  return {
+    subject: `Vendor Application Received for ${applicationData.eventTitle}`,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #f43f5e 0%, #ec4899 100%); padding: 30px; border-radius: 12px; text-align: center; color: white; margin-bottom: 30px;">
+          <h1 style="margin: 0; font-size: 28px; font-weight: 700;">PartyStorm</h1>
+          <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">Vendor Application Received</p>
+        </div>
+
+        <div style="background: #f9fafb; padding: 25px; border-radius: 12px; border: 1px solid #e5e7eb; margin-bottom: 20px;">
+          <p style="margin: 0 0 20px 0; color: #374151; font-size: 14px;">
+            Hi there, we have received your vendor application for <strong>${applicationData.eventTitle}</strong>.
+          </p>
+
+          <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #f43f5e;">
+            <p style="margin: 0; color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Business Name</p>
+            <p style="margin: 5px 0 15px 0; color: #1f2937; font-size: 16px; font-weight: 600;">${applicationData.businessName}</p>
+            
+            <p style="margin: 0; color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Stall Type</p>
+            <p style="margin: 5px 0 0 0; color: #1f2937; font-size: 16px; font-weight: 600;">${applicationData.stallType}</p>
+          </div>
+
+          <p style="margin: 20px 0 0 0; color: #6b7280; font-size: 13px;">
+            The event organizer will review your application and get back to you soon. You can check the status of your application from your dashboard.
+          </p>
+        </div>
+      </div>
+    `,
+    text: `We have received your vendor application for ${applicationData.eventTitle}. The organizer will review it and get back to you soon.`,
+  };
+};
+
 export default {
   sendEmail,
   generateOTPEmail,
   generateTicketConfirmationEmail,
   generatePasswordResetEmail,
   generateWelcomeEmail,
+  generateVendorApplicationEmail,
 };
