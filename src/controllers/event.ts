@@ -158,7 +158,7 @@ async function userCanManageEvent(userId: number, eventId: number) {
 // Get all events
 export const getEvents = async (req: Request, res: Response) => {
   try {
-    const { search, location, date, category, promoted, organizationId, page = 1, limit = 10 } = req.query;
+    const { search, location, date, category, promoted, organizationId, upcoming, page = 1, limit = 10 } = req.query;
 
     // Validate pagination parameters
     const pageNum = Math.max(1, Number(page));
@@ -169,7 +169,7 @@ export const getEvents = async (req: Request, res: Response) => {
       isPublished: true // Only return published events
     };
 
-    const cacheKey = `events_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}_${promoted || ''}_${organizationId || ''}`;
+    const cacheKey = `events_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}_${promoted || ''}_${organizationId || ''}_${upcoming || ''}`;
 
     const cachedData = await cacheGet(cacheKey);
     if (cachedData) {
@@ -215,6 +215,14 @@ export const getEvents = async (req: Request, res: Response) => {
       };
     }
 
+    if (upcoming === 'true') {
+      whereClause.endDate = { gte: new Date() };
+    }
+
+    const orderBy = date && organizationId
+      ? { startDate: 'asc' as const }
+      : { createdAt: 'desc' as const };
+
     const events = await prisma.event.findMany({
       where: whereClause,
       include: {
@@ -250,9 +258,7 @@ export const getEvents = async (req: Request, res: Response) => {
       },
       skip,
       take: limitNum,
-      orderBy: {
-        createdAt: 'desc'
-      }
+      orderBy,
     });
 
     const total = await prisma.event.count({ where: whereClause });
@@ -294,6 +300,7 @@ export const getEvent = async (req: Request, res: Response) => {
           logo: true,
           description: true,
           website: true,
+          socials: true,
           isVerified: true,
           serviceFeePercent: true,
           absorbFee: true
