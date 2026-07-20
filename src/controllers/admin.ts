@@ -2,12 +2,20 @@ import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
 import { PLATFORM_FEE_RATE } from '../constants/fees';
+import {
+  sendEmail,
+  generateSupportReplyEmail,
+  generateSupportResolvedEmail,
+} from '../services/email';
+
+const frontendBase = () =>
+  (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
 const paidOrderFilter = { status: 'PAID' as const };
 
 export const getDashboardStats = async (_req: AuthRequest, res: Response) => {
   try {
-    const [totalUsers, pendingHosts, verifiedHosts, totalEvents, totalTickets, revenueAgg, vendorAgg, openTickets] =
+    const [totalUsers, pendingHosts, verifiedHosts, totalEvents, totalTickets, revenueAgg, vendorAgg, openTickets, pendingOps] =
       await Promise.all([
         prisma.user.count(),
         prisma.organization.count({ where: { isVerified: false, rejectedAt: null } }),
@@ -25,6 +33,7 @@ export const getDashboardStats = async (_req: AuthRequest, res: Response) => {
           _count: true,
         }),
         prisma.supportTicket.count({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
+        prisma.opsProject.count({ where: { status: 'REQUESTED' } }),
       ]);
 
     const totalOrdersCount = (revenueAgg._count ?? 0) + (vendorAgg._count ?? 0);
@@ -45,6 +54,7 @@ export const getDashboardStats = async (_req: AuthRequest, res: Response) => {
       processingFees,
       organizerPayouts,
       openSupportTickets: openTickets,
+      pendingOpsRequests: pendingOps,
       platformFeePercent: PLATFORM_FEE_RATE * 100,
     });
   } catch (error) {
@@ -347,7 +357,7 @@ export const getSupportTicketById = async (req: AuthRequest, res: Response) => {
 export const replyToSupportTicket = async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { body, status } = req.body;
+    const { body, status, needsMoreInfo } = req.body;
 
     if (!body?.trim()) {
       return res.status(400).json({ message: 'Reply message is required' });
@@ -357,7 +367,12 @@ export const replyToSupportTicket = async (req: AuthRequest, res: Response) => {
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
 
     const allowedStatuses = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
-    const newStatus = status && allowedStatuses.includes(status) ? status : 'IN_PROGRESS';
+    const newStatus =
+      status && allowedStatuses.includes(status)
+        ? status
+        : needsMoreInfo
+          ? 'IN_PROGRESS'
+          : 'IN_PROGRESS';
 
     const [message] = await prisma.$transaction([
       prisma.supportTicketMessage.create({
@@ -377,7 +392,32 @@ export const replyToSupportTicket = async (req: AuthRequest, res: Response) => {
       }),
     ]);
 
-    return res.json({ message: 'Reply sent', reply: message });
+    const to = ticket.contactEmail;
+    if (to) {
+      const supportUrl = `${frontendBase()}/support`;
+      if (newStatus === 'RESOLVED') {
+        const tpl = generateSupportResolvedEmail({
+          name: ticket.contactName,
+          subject: ticket.subject,
+          ticketId: ticket.id,
+          note: body.trim(),
+          supportUrl,
+        });
+        void sendEmail({ to, subject: tpl.subject, html: tpl.html, text: tpl.text });
+      } else {
+        const tpl = generateSupportReplyEmail({
+          name: ticket.contactName,
+          subject: ticket.subject,
+          ticketId: ticket.id,
+          replyBody: body.trim(),
+          needsMoreInfo: Boolean(needsMoreInfo),
+          supportUrl,
+        });
+        void sendEmail({ to, subject: tpl.subject, html: tpl.html, text: tpl.text });
+      }
+    }
+
+    return res.json({ message: 'Reply sent', reply: message, emailSent: Boolean(to) });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -387,7 +427,10 @@ export const replyToSupportTicket = async (req: AuthRequest, res: Response) => {
 export const updateSupportTicket = async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { status, priority } = req.body;
+    const { status, priority, notifyMessage } = req.body;
+
+    const existing = await prisma.supportTicket.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ message: 'Ticket not found' });
 
     const data: Record<string, unknown> = { updatedAt: new Date() };
     if (status) data.status = status;
@@ -398,7 +441,25 @@ export const updateSupportTicket = async (req: AuthRequest, res: Response) => {
       data,
     });
 
-    return res.json({ message: 'Ticket updated', ticket });
+    const to = ticket.contactEmail;
+    const statusChanged = status && status !== existing.status;
+    if (to && statusChanged && (status === 'RESOLVED' || status === 'CLOSED')) {
+      const tpl = generateSupportResolvedEmail({
+        name: ticket.contactName,
+        subject: ticket.subject,
+        ticketId: ticket.id,
+        note:
+          typeof notifyMessage === 'string' && notifyMessage.trim()
+            ? notifyMessage.trim()
+            : status === 'CLOSED'
+              ? 'This ticket has been closed.'
+              : 'We’ve resolved your request. If you still need help, open a new support request.',
+        supportUrl: `${frontendBase()}/support`,
+      });
+      void sendEmail({ to, subject: tpl.subject, html: tpl.html, text: tpl.text });
+    }
+
+    return res.json({ message: 'Ticket updated', ticket, emailSent: Boolean(to && statusChanged) });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -581,10 +642,12 @@ export const getUsers = async (req: AuthRequest, res: Response) => {
         phone: true,
         role: true,
         isVerified: true,
+        isStaff: true,
         createdAt: true,
         ownedOrganizations: {
           select: { id: true, name: true, isVerified: true },
         },
+        staffProfile: true,
         _count: {
           select: { tickets: true },
         },
@@ -650,6 +713,10 @@ export const getAdminEvents = async (req: AuthRequest, res: Response) => {
       include: {
         organization: {
           select: { id: true, name: true },
+        },
+        opsProjects: {
+          select: { id: true, title: true, status: true },
+          take: 5,
         },
       },
       orderBy: { createdAt: 'desc' },

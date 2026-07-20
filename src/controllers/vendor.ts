@@ -265,7 +265,7 @@ export const getVendorApplicationById = async (req: Request, res: Response) => {
 export const updateVendorApplicationStatus = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { applicationStatus, paymentStatus } = req.body;
+    const { applicationStatus, paymentStatus, stallNumber } = req.body;
 
     // Get the vendor application to check if the current user is the event organizer
     const vendorApplication = await prisma.vendorApplication.findUnique({
@@ -309,6 +309,9 @@ export const updateVendorApplicationStatus = async (req: AuthRequest, res: Respo
       data: {
         applicationStatus,
         paymentStatus: paymentStatus !== undefined ? paymentStatus : vendorApplication.paymentStatus,
+        ...(stallNumber !== undefined && {
+          stallNumber: stallNumber === null || stallNumber === '' ? null : String(stallNumber).trim(),
+        }),
         ...(applicationStatus === 'APPROVED' && { approvedAt: new Date() }),
         ...(applicationStatus === 'REJECTED' && { rejectedAt: new Date() })
       }

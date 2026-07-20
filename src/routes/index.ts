@@ -15,6 +15,7 @@ import adminRoutes from './admin'
 import supportRoutes from './support'
 import emailRoutes from './email'
 import financeRoutes from './finance'
+import staffRoutes from './staff'
 
 const router: Router = express.Router()
 
@@ -34,5 +35,6 @@ router.use("/admin", adminRoutes);
 router.use("/support", supportRoutes);
 router.use("/emails", emailRoutes);
 router.use("/finance", financeRoutes);
+router.use("/staff", staffRoutes);
 
 export default router

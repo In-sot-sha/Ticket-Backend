@@ -10,6 +10,7 @@ import {
   requestTicketRecovery,
   verifyTicketRecovery,
   checkoutGuest,
+  checkTicketEligibility,
   manualTicket,
 } from '../controllers/ticket';
 import { verifyToken, optionalVerifyToken, requireRole } from '../middleware/auth';
@@ -19,6 +20,7 @@ const router = Router();
 
 // Public routes (no authentication required)
 router.post('/checkout/guest', checkoutGuest);
+router.post('/eligibility', optionalVerifyToken, checkTicketEligibility);
 router.post('/validate', validateTicket); // For gate scanning
 
 // Ticket queries with distinct routes

@@ -97,6 +97,9 @@ export const sendWelcomeEmail = async (req: AuthRequest, res: Response) => {
     if (!user) {
       return res.status(404).json({ message: 'User not found.' });
     }
+    if (!user.email) {
+      return res.status(400).json({ message: 'This account has no email on file.' });
+    }
 
     // Send welcome email
     const emailTemplate = generateWelcomeEmail(user.firstName || 'there');
@@ -166,6 +169,10 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       minute: '2-digit',
     });
 
+    if (!ticket.user?.email) {
+      return res.status(400).json({ message: 'This ticket has no email on file.' });
+    }
+
     // Send ticket confirmation email
     const emailTemplate = generateTicketConfirmationEmail(ticket.user.email, {
       ticketId: `TKT-${ticket.id.toString().padStart(6, '0')}`,
@@ -175,6 +182,8 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       ticketType: ticket.ticketType?.name || 'General Admission',
       quantity: 1,
       totalPrice: ticket.ticketType?.price || 0,
+      ticketStyle: ticket.ticketType?.ticketStyle,
+      accentColor: ticket.ticketType?.accentColor,
     });
 
     const sent = await sendEmail({

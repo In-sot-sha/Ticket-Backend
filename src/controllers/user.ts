@@ -7,6 +7,32 @@ import { generateToken, AuthRequest } from '../middleware/auth';
 import { hashPassword, comparePassword } from '../utils/password';
 import { uploadAvatarImage } from '../utils/imageUpload';
 import { sendEmail, generateWelcomeEmail } from '../services/email';
+import { isValidEmail, isValidName, normalizePhone } from '../utils/validation';
+import { findUserByIdentifier } from '../services/guestUser';
+
+const publicUser = (user: {
+  id: number;
+  email: string | null;
+  phone?: string | null;
+  firstName: string;
+  lastName: string;
+  role: string;
+  isStaff?: boolean;
+  mustChangePassword?: boolean;
+  ownedOrganizations?: unknown[];
+  vendorProfiles?: unknown[];
+}) => ({
+  id: user.id,
+  email: user.email,
+  phone: user.phone ?? null,
+  firstName: user.firstName,
+  lastName: user.lastName,
+  role: user.role,
+  isStaff: user.isStaff,
+  mustChangePassword: user.mustChangePassword,
+  ownedOrganizations: user.ownedOrganizations || [],
+  vendorProfile: (user as { vendorProfiles?: unknown[] }).vendorProfiles?.[0] || null,
+});
 
 // ── Register ──────────────────────────────────────────────────────────────────
 
@@ -14,68 +40,122 @@ export const register = async (req: Request, res: Response) => {
   try {
     const { email, password, firstName, lastName, phone } = req.body;
 
-    const existingUser = await prisma.user.findUnique({ where: { email } });
-    
-    if (existingUser) {
-      // Check if existing user is a guest account that can be converted
-      if (existingUser.isGuest) {
-        // Convert guest account to full registered account
-        const hashedPassword = await hashPassword(password);
-        const updatedUser = await prisma.user.update({
-          where: { id: existingUser.id },
-          data: {
-            password: hashedPassword,
-            isGuest: false,
-            firstName: firstName || existingUser.firstName,
-            lastName: lastName || existingUser.lastName,
-            phone: phone || existingUser.phone,
-          },
-        });
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters' });
+    }
+    if (!isValidName(firstName) || !isValidName(lastName)) {
+      return res.status(400).json({ message: 'First and last name are required' });
+    }
 
-        // Send welcome email for converted guest account (fire-and-forget)
+    const cleanEmail = email?.trim() ? String(email).trim().toLowerCase() : null;
+    const cleanPhone = phone ? normalizePhone(String(phone)) : null;
+
+    if (cleanEmail && !isValidEmail(cleanEmail)) {
+      return res.status(400).json({ message: 'Invalid email address' });
+    }
+    if (phone && !cleanPhone) {
+      return res.status(400).json({ message: 'Invalid phone number. Use a Nigerian number like 0803… or +234…' });
+    }
+    if (!cleanEmail && !cleanPhone) {
+      return res.status(400).json({ message: 'Email or phone number is required' });
+    }
+
+    const existingByEmail = cleanEmail
+      ? await prisma.user.findUnique({ where: { email: cleanEmail } })
+      : null;
+    const existingByPhone = cleanPhone
+      ? await prisma.user.findUnique({ where: { phone: cleanPhone } })
+      : null;
+
+    // Prefer matching guest by email, else phone
+    const existingUser = existingByEmail || existingByPhone;
+
+    if (existingUser && !existingUser.isGuest) {
+      if (existingByEmail && existingByEmail.id === existingUser.id) {
+        return res.status(400).json({ message: 'User with this email already exists' });
+      }
+      if (existingByPhone && existingByPhone.id === existingUser.id) {
+        return res.status(400).json({ message: 'User with this phone number already exists' });
+      }
+      return res.status(400).json({ message: 'An account with these details already exists' });
+    }
+
+    // Conflict: email and phone belong to different non-guest-mergeable users
+    if (
+      existingByEmail &&
+      existingByPhone &&
+      existingByEmail.id !== existingByPhone.id &&
+      (!existingByEmail.isGuest || !existingByPhone.isGuest)
+    ) {
+      return res.status(400).json({ message: 'Email and phone belong to different accounts' });
+    }
+
+    if (existingUser?.isGuest) {
+      const hashedPassword = await hashPassword(password);
+      const updatedUser = await prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          password: hashedPassword,
+          isGuest: false,
+          firstName: firstName || existingUser.firstName,
+          lastName: lastName || existingUser.lastName,
+          email: cleanEmail || existingUser.email,
+          phone: cleanPhone || existingUser.phone,
+        },
+      });
+
+      if (updatedUser.email) {
         const welcomeTemplate = generateWelcomeEmail(updatedUser.firstName);
         sendEmail({
           to: updatedUser.email,
           subject: welcomeTemplate.subject,
           html: welcomeTemplate.html,
           text: welcomeTemplate.text,
-        }).catch(err => console.error('[Register] Welcome email failed for converted guest:', err));
-
-        const token = generateToken(updatedUser.id, updatedUser.role);
-        return res.status(200).json({
-          message: 'Guest account converted to full account successfully',
-          token,
-          user: { id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName, role: updatedUser.role, ownedOrganizations: [] },
-        });
-      } else {
-        // Regular account exists, cannot register again
-        res.status(400).json({ message: 'User with this email already exists' });
-        return;
+        }).catch((err) => console.error('[Register] Welcome email failed for converted guest:', err));
       }
+
+      const token = generateToken(updatedUser.id, updatedUser.role);
+      return res.status(200).json({
+        message: 'Guest account converted to full account successfully',
+        token,
+        user: publicUser(updatedUser),
+      });
     }
 
     const hashedPassword = await hashPassword(password);
     const user = await prisma.user.create({
-      data: { email, password: hashedPassword, firstName, lastName, phone, role: 'USER', isGuest: false },
+      data: {
+        email: cleanEmail,
+        phone: cleanPhone,
+        password: hashedPassword,
+        firstName,
+        lastName,
+        role: 'USER',
+        isGuest: false,
+      },
     });
 
-    // Send welcome email (fire-and-forget)
-    const welcomeTemplate = generateWelcomeEmail(user.firstName);
-    sendEmail({
-      to: user.email,
-      subject: welcomeTemplate.subject,
-      html: welcomeTemplate.html,
-      text: welcomeTemplate.text,
-    }).catch(err => console.error('[Register] Welcome email failed:', err));
+    if (user.email) {
+      const welcomeTemplate = generateWelcomeEmail(user.firstName);
+      sendEmail({
+        to: user.email,
+        subject: welcomeTemplate.subject,
+        html: welcomeTemplate.html,
+        text: welcomeTemplate.text,
+      }).catch((err) => console.error('[Register] Welcome email failed:', err));
+    }
 
     const token = generateToken(user.id, user.role);
     return res.status(201).json({
       message: 'User registered successfully',
       token,
-      user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role, ownedOrganizations: [] },
+      user: publicUser(user),
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error(error);
+    if (error?.code === 'P2002') {
+      return res.status(400).json({ message: 'User with this email or phone already exists' });
+    }
     return res.status(500).json({ message: 'Server error during registration' });
   }
 };
@@ -84,32 +164,34 @@ export const register = async (req: Request, res: Response) => {
 
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { email, identifier, password } = req.body;
+    const rawId = String(identifier || email || '').trim();
+
+    if (!rawId || !password) {
+      return res.status(400).json({ message: 'Email/phone and password are required' });
+    }
+
+    const found = await findUserByIdentifier(rawId);
+    if (!found) {
+      return res.status(400).json({ message: 'Invalid email/phone or password' });
+    }
 
     const user = await prisma.user.findUnique({
-      where: { email },
+      where: { id: found.id },
       include: { ownedOrganizations: true, vendorProfiles: true },
     });
 
-    if (!user) return res.status(400).json({ message: 'Invalid email or password' });
+    if (!user) return res.status(400).json({ message: 'Invalid email/phone or password' });
     if (!user.password) return res.status(400).json({ message: 'Please sign in with Google' });
 
     const isMatch = await comparePassword(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: 'Invalid email or password' });
+    if (!isMatch) return res.status(400).json({ message: 'Invalid email/phone or password' });
 
     const token = generateToken(user.id, user.role);
     return res.json({
       message: 'Login successful',
       token,
-      user: { 
-        id: user.id, 
-        email: user.email, 
-        firstName: user.firstName, 
-        lastName: user.lastName, 
-        role: user.role, 
-        ownedOrganizations: user.ownedOrganizations || [], 
-        vendorProfile: user.vendorProfiles?.[0] || null 
-      },
+      user: publicUser(user),
     });
   } catch (error) {
     console.error(error);
@@ -123,7 +205,7 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.userId! },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
     if (!user) return res.status(404).json({ message: 'User not found' });
     const { vendorProfiles, ...rest } = user as any;
@@ -139,15 +221,34 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
 export const updateProfile = async (req: AuthRequest, res: Response) => {
   try {
     const { firstName, lastName, phone, avatar } = req.body;
+    let cleanPhone: string | null | undefined = undefined;
+    if (phone !== undefined) {
+      if (!phone || !String(phone).trim()) {
+        cleanPhone = null;
+      } else {
+        cleanPhone = normalizePhone(String(phone));
+        if (!cleanPhone) {
+          return res.status(400).json({ message: 'Invalid phone number' });
+        }
+      }
+    }
     const user = await prisma.user.update({
       where: { id: req.userId! },
-      data: { firstName, lastName, phone, avatar },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
+      data: {
+        firstName,
+        lastName,
+        ...(phone !== undefined ? { phone: cleanPhone } : {}),
+        avatar,
+      },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
     const { vendorProfiles, ...rest } = user as any;
     return res.json({ message: 'Profile updated successfully', user: { ...rest, vendorProfile: vendorProfiles?.[0] || null } });
-  } catch (error) {
+  } catch (error: any) {
     console.error(error);
+    if (error?.code === 'P2002') {
+      return res.status(400).json({ message: 'This phone number is already in use' });
+    }
     return res.status(500).json({ message: 'Server error' });
   }
 };
@@ -162,7 +263,7 @@ export const uploadAvatar = async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.update({
       where: { id: req.userId! },
       data: { avatar: avatarUrl },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
     const { vendorProfiles, ...rest } = user as any;
 
@@ -170,6 +271,57 @@ export const uploadAvatar = async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Failed to upload avatar' });
+  }
+};
+
+/** Change password — clears mustChangePassword when successful */
+export const changePassword = async (req: AuthRequest, res: Response) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'currentPassword and newPassword are required' });
+    }
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ message: 'New password must be at least 8 characters' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: req.userId! } });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user.password) {
+      return res.status(400).json({ message: 'This account uses social login and has no password to change' });
+    }
+
+    const ok = await comparePassword(currentPassword, user.password);
+    if (!ok) return res.status(400).json({ message: 'Current password is incorrect' });
+
+    const hashed = await hashPassword(newPassword);
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashed, mustChangePassword: false },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        avatar: true,
+        isVerified: true,
+        isStaff: true,
+        mustChangePassword: true,
+        createdAt: true,
+        ownedOrganizations: true,
+        vendorProfiles: true,
+      },
+    });
+    const { vendorProfiles, ...rest } = updated as any;
+    return res.json({
+      message: 'Password updated successfully',
+      user: { ...rest, vendorProfile: vendorProfiles?.[0] || null },
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -362,7 +514,7 @@ export const googleLogin = async (req: Request, res: Response) => {
     }
 
     // Send welcome email for new Google users (fire-and-forget)
-    if (isNewUser) {
+    if (isNewUser && user.email) {
       const welcomeTemplate = generateWelcomeEmail(user.firstName);
       sendEmail({
         to: user.email,
@@ -376,16 +528,7 @@ export const googleLogin = async (req: Request, res: Response) => {
     return res.json({
       message: 'Google login successful',
       token,
-      user: { 
-        id: user.id, 
-        email: user.email, 
-        firstName: user.firstName, 
-        lastName: user.lastName, 
-        role: user.role, 
-        avatar: user.avatar, 
-        ownedOrganizations: user.ownedOrganizations || [], 
-        vendorProfile: user.vendorProfiles?.[0] || null 
-      },
+      user: publicUser(user),
     });
   } catch (error) {
     console.error('[googleLogin] Error:', error);
@@ -476,6 +619,8 @@ export const refreshToken = async (req: Request, res: Response) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
+        isStaff: user.isStaff,
+        mustChangePassword: user.mustChangePassword,
         avatar: user.avatar,
         vendorProfile: user.vendorProfiles?.[0] || null
       }

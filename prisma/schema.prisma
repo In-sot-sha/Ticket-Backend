@@ -66,16 +66,18 @@ enum SupportTicketCategory {
 
 model User {
   id             Int      @id @default(autoincrement())
-  email          String   @unique
+  email          String?  @unique
   password       String?
   authProvider   String   @default("local")
   authProviderId String?  @unique
   firstName      String
   lastName       String
-  phone          String?
+  phone          String?  @unique
   role           UserRole @default(USER)
   isVerified     Boolean  @default(false)
   isGuest        Boolean  @default(false)
+  isStaff        Boolean  @default(false)
+  mustChangePassword Boolean @default(false)
   avatar         String?
 
   createdAt DateTime @default(now())
@@ -93,6 +95,9 @@ model User {
   errorLogs              ErrorLog[]               @relation("ErrorLogs")
   supportTickets         SupportTicket[]
   supportMessages        SupportTicketMessage[]
+  staffProfile           StaffProfile?
+  staffOrgCoverages      StaffOrgCoverage[]
+  staffProjectAssignments StaffProjectAssignment[]
 }
 
 model Organization {
@@ -131,6 +136,8 @@ model Organization {
   events    Event[]
   gatePins  GatePin[]
   payouts   Payout[]
+  staffCoverages StaffOrgCoverage[]
+  opsProjects    OpsProject[]
 }
 
 model OrganizationMember {
@@ -210,6 +217,7 @@ model Event {
   organization Organization? @relation(fields: [organizationId], references: [id])
   tickets      Ticket[]
   orders       Order[]
+  opsProjects  OpsProject[]
 
   @@index([isPublished, startDate])
   @@index([category])
@@ -443,3 +451,74 @@ model Otp {
   @@index([contact])
   @@index([expiresAt])
 }
+
+// ── PartyStorm staffing / ops coverage ───────────────────────────────────────
+
+model StaffProfile {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @unique
+  capabilities String   @db.Text // JSON array: SCAN, WALK_IN_SALE, CHECK_IN, GATE_MANAGE, SUPPORT
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model StaffOrgCoverage {
+  id                   Int      @id @default(autoincrement())
+  userId               Int
+  organizationId       Int
+  capabilitiesOverride String?  @db.Text // optional JSON array
+  createdAt            DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+enum OpsProjectStatus {
+  REQUESTED
+  ACTIVE
+  LINKED
+  CLOSED
+}
+
+model OpsProject {
+  id             Int              @id @default(autoincrement())
+  title          String
+  organizationId Int?
+  eventId        Int?
+  status         OpsProjectStatus @default(REQUESTED)
+  services       String           @db.Text // JSON array of service tags
+  notes          String?          @db.Text
+  windowStart    DateTime?
+  windowEnd      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  event        Event?        @relation(fields: [eventId], references: [id])
+  assignments  StaffProjectAssignment[]
+
+  @@index([status])
+  @@index([organizationId])
+  @@index([eventId])
+}
+
+model StaffProjectAssignment {
+  id                   Int      @id @default(autoincrement())
+  projectId            Int
+  userId               Int
+  capabilitiesOverride String?  @db.Text
+  createdAt            DateTime @default(now())
+
+  project OpsProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+

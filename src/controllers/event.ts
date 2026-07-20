@@ -155,10 +155,27 @@ async function userCanManageEvent(userId: number, eventId: number) {
   });
 }
 
+async function resolveOrganizerEventId(userId: number, identifier: string): Promise<number | null> {
+  const asNumber = Number(identifier);
+  if (!Number.isNaN(asNumber) && asNumber > 0 && String(asNumber) === identifier) {
+    const byId = await userCanManageEvent(userId, asNumber);
+    return byId?.id ?? null;
+  }
+
+  const bySlug = await prisma.event.findFirst({
+    where: {
+      slug: identifier,
+      organization: organizerOrgFilter(userId),
+    },
+    select: { id: true },
+  });
+  return bySlug?.id ?? null;
+}
+
 // Get all events
 export const getEvents = async (req: Request, res: Response) => {
   try {
-    const { search, location, date, category, promoted, organizationId, upcoming, page = 1, limit = 10 } = req.query;
+    const { search, location, date, category, promoted, organizationId, upcoming, page = 1, limit = 10, dateFrom: dateFromQ, dateTo: dateToQ } = req.query;
 
     // Validate pagination parameters
     const pageNum = Math.max(1, Number(page));
@@ -169,7 +186,7 @@ export const getEvents = async (req: Request, res: Response) => {
       isPublished: true // Only return published events
     };
 
-    const cacheKey = `events_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}_${promoted || ''}_${organizationId || ''}_${upcoming || ''}`;
+    const cacheKey = `events_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}_${dateFromQ || ''}_${dateToQ || ''}_${promoted || ''}_${organizationId || ''}_${upcoming || ''}`;
 
     const cachedData = await cacheGet(cacheKey);
     if (cachedData) {
@@ -193,14 +210,18 @@ export const getEvents = async (req: Request, res: Response) => {
     }
 
     if (search) {
+      const q = String(search).trim();
       whereClause.OR = [
-        { title: { contains: String(search) } },
-        { description: { contains: String(search) } }
+        { title: { contains: q } },
+        { description: { contains: q } },
+        { location: { contains: q } },
+        { category: { contains: q } },
+        { organization: { name: { contains: q } } },
       ];
     }
 
     if (location) {
-      whereClause.location = { contains: String(location), mode: 'insensitive' };
+      whereClause.location = { contains: String(location) };
     }
 
     if (category) {
@@ -208,10 +229,30 @@ export const getEvents = async (req: Request, res: Response) => {
     }
 
     if (date) {
-      const dateFilter = new Date(String(date));
+      const day = new Date(String(date));
+      if (!Number.isNaN(day.getTime())) {
+        const start = new Date(day);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(day);
+        end.setHours(23, 59, 59, 999);
+        whereClause.startDate = { gte: start, lte: end };
+      }
+    }
+
+    const dateFrom = dateFromQ ? new Date(String(dateFromQ)) : null;
+    const dateTo = dateToQ ? new Date(String(dateToQ)) : null;
+    if (dateFrom && !Number.isNaN(dateFrom.getTime()) && !date) {
+      dateFrom.setHours(0, 0, 0, 0);
       whereClause.startDate = {
-        gte: new Date(dateFilter.setHours(0, 0, 0, 0)),
-        lte: new Date(dateFilter.setHours(23, 59, 59, 999))
+        ...(whereClause.startDate || {}),
+        gte: dateFrom,
+      };
+    }
+    if (dateTo && !Number.isNaN(dateTo.getTime()) && !date) {
+      dateTo.setHours(23, 59, 59, 999);
+      whereClause.startDate = {
+        ...(whereClause.startDate || {}),
+        lte: dateTo,
       };
     }
 
@@ -303,14 +344,17 @@ export const getEvent = async (req: Request, res: Response) => {
           socials: true,
           isVerified: true,
           serviceFeePercent: true,
-          absorbFee: true
+          absorbFee: true,
+          owner: {
+            select: { email: true, phone: true },
+          },
         }
       },
       ticketTypes: {
         select: {
           id: true, name: true, price: true, quantity: true,
           ticketStyle: true, accentColor: true, badgeText: true,
-          ticketHeadline: true, venueLabel: true,
+          ticketHeadline: true, venueLabel: true, maxPerPerson: true,
         },
       },
       vendorTypes: {
@@ -825,7 +869,11 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
     }
     
     // Update vendor types if provided
-    if (resolvedAllowVendors && parsedVendorTypes?.length) {
+    if (resolvedAllowVendors === false) {
+      await prisma.vendorType.deleteMany({
+        where: { eventId: existingEvent.id }
+      });
+    } else if (resolvedAllowVendors && parsedVendorTypes?.length) {
       // Very basic implementation: clear and recreate
       // A more robust implementation would update existing and create new ones
       await prisma.vendorType.deleteMany({
@@ -882,31 +930,41 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
 };
 
 // Get events for the authenticated organizer (now organization owner or member)
+const ORGANIZER_EVENT_PHASE_ORDER: Record<string, number> = {
+  live: 0,
+  upcoming: 1,
+  draft: 2,
+  past: 3,
+};
+
 export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
-  console.log('here')
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 100 } = req.query;
 
     // Validate pagination parameters
     const pageNum = Math.max(1, Number(page));
     const limitNum = Math.min(100, Math.max(1, Number(limit))); // Set reasonable limits
     const skip = (pageNum - 1) * limitNum;
 
-    // Get events organized by organizations the current user owns or is a member of
-    const events = await prisma.event.findMany({
-      where: {
-        organization: {
-          OR: [
-            { ownerId: req.userId! },
-            { members: {
-                some: {
-                  userId: req.userId!
-                }
-              }
-            }
-          ]
-        }
+    const organizerWhere = {
+      organization: {
+        OR: [
+          { ownerId: req.userId! },
+          {
+            members: {
+              some: {
+                userId: req.userId!,
+              },
+            },
+          },
+        ],
       },
+    };
+
+    // Load all matching events so we can sort by phase (live → upcoming → draft → past)
+    // before paginating — createdAt order was putting past events first for many orgs.
+    const events = await prisma.event.findMany({
+      where: organizerWhere,
       include: {
         organization: {
           select: {
@@ -943,31 +1001,31 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
           }
         }
       },
-      skip,
-      take: limitNum,
       orderBy: {
-        createdAt: 'desc' // Most recent events first
-      }
+        startDate: 'asc',
+      },
     });
 
-    const total = await prisma.event.count({
-      where: {
-        organization: {
-          OR: [
-            { ownerId: req.userId! },
-            { members: {
-                some: {
-                  userId: req.userId!
-                }
-              }
-            }
-          ]
-        }
+    const total = events.length;
+
+    const sortedEvents = [...events].sort((a, b) => {
+      const phaseA = getEventPhase(a.isPublished, a.startDate, a.endDate);
+      const phaseB = getEventPhase(b.isPublished, b.startDate, b.endDate);
+      const rankA = ORGANIZER_EVENT_PHASE_ORDER[phaseA] ?? 99;
+      const rankB = ORGANIZER_EVENT_PHASE_ORDER[phaseB] ?? 99;
+      if (rankA !== rankB) return rankA - rankB;
+
+      // Within upcoming/live/draft: soonest first. Within past: most recent first.
+      if (phaseA === 'past') {
+        return b.startDate.getTime() - a.startDate.getTime();
       }
+      return a.startDate.getTime() - b.startDate.getTime();
     });
+
+    const pageEvents = sortedEvents.slice(skip, skip + limitNum);
 
     const eventsWithStats = await Promise.all(
-      events.map(async (event: (typeof events)[number]) => {
+      pageEvents.map(async (event: (typeof pageEvents)[number]) => {
         const stats = await buildEventStats(event.id, event.ticketTypes, event.capacity);
         const { _count, ...rest } = event;
         return {
@@ -995,16 +1053,16 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Get a single organizer event with full sales stats
+// Get a single organizer event with full sales stats (accepts numeric ID or slug)
 export const getOrganizerEventById = async (req: AuthRequest, res: Response) => {
   try {
-    const eventId = Number(req.params.id);
-    if (isNaN(eventId) || eventId <= 0) {
-      return res.status(400).json({ message: 'Invalid event ID' });
+    const identifier = String(req.params.id || '').trim();
+    if (!identifier) {
+      return res.status(400).json({ message: 'Invalid event identifier' });
     }
 
-    const event = await userCanManageEvent(req.userId!, eventId);
-    if (!event) {
+    const eventId = await resolveOrganizerEventId(req.userId!, identifier);
+    if (!eventId) {
       return res.status(404).json({ message: 'Event not found or you do not have permission' });
     }
 
@@ -1028,7 +1086,11 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
             price: true,
             quantity: true,
             ticketStyle: true,
+            accentColor: true,
             badgeText: true,
+            ticketHeadline: true,
+            venueLabel: true,
+            maxPerPerson: true,
           },
         },
         vendorTypes: {

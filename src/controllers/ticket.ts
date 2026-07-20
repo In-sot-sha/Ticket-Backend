@@ -1,9 +1,16 @@
 import { Response } from 'express';
 import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/auth';
-import { isValidEmail, isValidName, isValidPhone, sanitizeString } from '../utils/validation';
+import { isValidEmail, isValidName, isValidPhone, normalizePhone, sanitizeString } from '../utils/validation';
 import { createOTP, verifyOTP, consumeOTP, cleanupExpiredOTPs } from '../services/otp';
 import { sendEmail, generateOTPEmail } from '../services/email';
+import {
+  assertMaxPerPerson,
+  getMaxPerPerson,
+  getOrCreateGuestUser,
+  findUsersByContact,
+  countOwnedTickets,
+} from '../services/guestUser';
 
 /**
  * Get all tickets for the authenticated user or for an event (by eventId param)
@@ -183,6 +190,11 @@ export const purchaseTicket = async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    if (!req.userId) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
+    }
+
     const event = await prisma.event.findUnique({
       where: { id: eventId },
     });
@@ -199,6 +211,37 @@ export const purchaseTicket = async (req: AuthRequest, res: Response) => {
     if (!ticketType) {
       res.status(404).json({ message: 'Ticket type not found' });
       return;
+    }
+
+    const buyer = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!buyer) {
+      res.status(404).json({ message: 'User not found' });
+      return;
+    }
+
+    const maxPerPerson = getMaxPerPerson(ticketType);
+    try {
+      await assertMaxPerPerson({
+        eventId: Number(eventId),
+        ticketTypeId: Number(ticketTypeId),
+        quantity: Number(quantity),
+        maxPerPerson,
+        email: buyer.email,
+        phone: buyer.phone,
+        extraUserIds: [buyer.id],
+      });
+    } catch (limitErr: any) {
+      if (limitErr?.code === 'MAX_PER_PERSON') {
+        res.status(400).json({
+          message: limitErr.message,
+          code: 'MAX_PER_PERSON',
+          owned: limitErr.owned,
+          maxPerPerson: limitErr.maxPerPerson,
+          remaining: limitErr.remaining,
+        });
+        return;
+      }
+      throw limitErr;
     }
 
     // Create tickets
@@ -235,6 +278,8 @@ export const purchaseTicket = async (req: AuthRequest, res: Response) => {
             quantity,
             totalPrice: ticketType.price * quantity,
             qrCode: firstTicket.qrCode,
+            ticketStyle: ticketType.ticketStyle,
+            accentColor: ticketType.accentColor,
           });
           
           await sendEmail({
@@ -543,6 +588,52 @@ export const verifyTicketRecovery = async (req: AuthRequest, res: Response) => {
 };
 
 /**
+ * Check how many tickets a contact already owns for a ticket type (public).
+ */
+export const checkTicketEligibility = async (req: AuthRequest, res: Response) => {
+  try {
+    const { eventId, ticketTypeId, email, phone } = req.body;
+
+    if (!eventId || !ticketTypeId) {
+      res.status(400).json({ message: 'eventId and ticketTypeId are required' });
+      return;
+    }
+
+    const cleanEmail = email?.trim() ? String(email).trim().toLowerCase() : null;
+    const cleanPhone = phone ? normalizePhone(String(phone)) : null;
+
+    if (cleanEmail && !isValidEmail(cleanEmail)) {
+      res.status(400).json({ message: 'Invalid email address' });
+      return;
+    }
+    if (phone && !cleanPhone) {
+      res.status(400).json({ message: 'Invalid phone number' });
+      return;
+    }
+
+    const ticketType = await prisma.ticketType.findUnique({
+      where: { id: Number(ticketTypeId) },
+    });
+    if (!ticketType || ticketType.eventId !== Number(eventId)) {
+      res.status(404).json({ message: 'Ticket type not found for this event' });
+      return;
+    }
+
+    const maxPerPerson = getMaxPerPerson(ticketType);
+    const extraUserIds = req.userId ? [req.userId] : [];
+    const users = await findUsersByContact(cleanEmail, cleanPhone);
+    const userIds = Array.from(new Set([...users.map((u) => u.id), ...extraUserIds]));
+    const owned = await countOwnedTickets(Number(eventId), Number(ticketTypeId), userIds);
+    const remaining = Math.max(0, maxPerPerson - owned);
+
+    res.json({ owned, maxPerPerson, remaining });
+  } catch (error) {
+    console.error('Error checking ticket eligibility:', error);
+    res.status(500).json({ message: 'Error checking eligibility' });
+  }
+};
+
+/**
  * Checkout as guest
  * Add input validation for firstName, lastName, email, phone
  */
@@ -562,14 +653,14 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Input validation for email
-    if (!email || !isValidEmail(email)) {
-      res.status(400).json({ message: 'Invalid email address' });
+    const cleanEmail = email?.trim() ? String(email).trim().toLowerCase() : null;
+    const cleanPhone = phone ? normalizePhone(String(phone)) : null;
+
+    if (!cleanEmail || !isValidEmail(cleanEmail)) {
+      res.status(400).json({ message: 'A valid email address is required' });
       return;
     }
-
-    // Input validation for phone
-    if (phone && !isValidPhone(phone)) {
+    if (phone && !cleanPhone) {
       res.status(400).json({ message: 'Invalid phone number' });
       return;
     }
@@ -583,7 +674,6 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
     // Sanitize string inputs
     const sanitizedFirstName = sanitizeString(firstName);
     const sanitizedLastName = sanitizeString(lastName);
-    const sanitizedPhone = phone ? sanitizeString(phone) : undefined;
 
     // Check if event exists
     const event = await prisma.event.findUnique({
@@ -606,22 +696,60 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Find or create guest user
-    let guestUser = await prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (!guestUser) {
-      guestUser = await prisma.user.create({
-        data: {
-          email,
-          firstName: sanitizedFirstName,
-          lastName: sanitizedLastName,
-          phone: sanitizedPhone,
-          isGuest: true,
-          role: 'USER',
-        },
+    let guestUser;
+    try {
+      guestUser = await getOrCreateGuestUser({
+        name: `${sanitizedFirstName} ${sanitizedLastName}`,
+        email: cleanEmail,
+        phone: cleanPhone,
       });
+    } catch (err: any) {
+      if (err?.message === 'CONTACT_REQUIRED') {
+        res.status(400).json({ message: 'Email or phone number is required' });
+        return;
+      }
+      if (err?.message === 'INVALID_EMAIL') {
+        res.status(400).json({ message: 'Invalid email address' });
+        return;
+      }
+      if (err?.message === 'INVALID_PHONE') {
+        res.status(400).json({ message: 'Invalid phone number' });
+        return;
+      }
+      throw err;
+    }
+
+    // Backfill name if guest was found by contact only
+    if (guestUser.firstName === 'Guest' || !guestUser.firstName) {
+      guestUser = await prisma.user.update({
+        where: { id: guestUser.id },
+        data: { firstName: sanitizedFirstName, lastName: sanitizedLastName },
+      });
+    }
+
+    const maxPerPerson = getMaxPerPerson(ticketType);
+    try {
+      await assertMaxPerPerson({
+        eventId: Number(eventId),
+        ticketTypeId: Number(ticketTypeId),
+        quantity: Number(quantity),
+        maxPerPerson,
+        email: cleanEmail || guestUser.email,
+        phone: cleanPhone || guestUser.phone,
+        extraUserIds: [guestUser.id],
+      });
+    } catch (limitErr: any) {
+      if (limitErr?.code === 'MAX_PER_PERSON') {
+        res.status(400).json({
+          message: limitErr.message,
+          code: 'MAX_PER_PERSON',
+          owned: limitErr.owned,
+          maxPerPerson: limitErr.maxPerPerson,
+          remaining: limitErr.remaining,
+        });
+        return;
+      }
+      throw limitErr;
     }
 
     // Use database transaction to ensure order + tickets are created atomically
@@ -674,29 +802,34 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
       return { order, tickets };
     });
 
-    // Send email
-    try {
-      const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
-      const firstTicket = result.tickets[0];
-      const emailContent = generateTicketConfirmationEmail(email, {
-        ticketId: result.tickets.map(t => t.id).join(', '),
-        eventTitle: event.title,
-        eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
-        eventLocation: event.location || 'TBA',
-        ticketType: ticketType.name,
-        quantity,
-        totalPrice: result.order.totalAmount,
-        qrCode: firstTicket.qrCode,
-      });
-      
-      await sendEmail({
-        to: email,
-        subject: emailContent.subject,
-        html: emailContent.html,
-        text: emailContent.text,
-      });
-    } catch (err) {
-      console.error('Failed to send guest checkout ticket email:', err);
+    // Send email only when buyer has an email
+    const notifyEmail = cleanEmail || guestUser.email;
+    if (notifyEmail) {
+      try {
+        const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
+        const firstTicket = result.tickets[0];
+        const emailContent = generateTicketConfirmationEmail(notifyEmail, {
+          ticketId: result.tickets.map(t => t.id).join(', '),
+          eventTitle: event.title,
+          eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
+          eventLocation: event.location || 'TBA',
+          ticketType: ticketType.name,
+          quantity,
+          totalPrice: result.order.totalAmount,
+          qrCode: firstTicket.qrCode,
+          ticketStyle: ticketType.ticketStyle,
+          accentColor: ticketType.accentColor,
+        });
+        
+        await sendEmail({
+          to: notifyEmail,
+          subject: emailContent.subject,
+          html: emailContent.html,
+          text: emailContent.text,
+        });
+      } catch (err) {
+        console.error('Failed to send guest checkout ticket email:', err);
+      }
     }
 
     res.status(201).json({
@@ -743,6 +876,32 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    const contactOk = (email?: string, phone?: string) => {
+      const e = email?.trim();
+      const p = phone?.trim();
+      const emailValid = e ? isValidEmail(e) : false;
+      const phoneValid = p ? isValidPhone(p) : false;
+      if (e && !emailValid) return false;
+      if (p && !phoneValid) return false;
+      return emailValid || phoneValid;
+    };
+
+    if (attendees && attendees.length > 0) {
+      for (const att of attendees) {
+        if (!att?.name?.trim()) {
+          res.status(400).json({ message: 'Each guest needs a name.' });
+          return;
+        }
+        if (!contactOk(att.email, att.phone)) {
+          res.status(400).json({ message: 'Each guest needs a valid email or phone number.' });
+          return;
+        }
+      }
+    } else if (!contactOk(buyerEmail, buyerPhone)) {
+      res.status(400).json({ message: 'A valid buyer email or phone number is required.' });
+      return;
+    }
+
     // Verify the event exists and the requester is the organizer
     const event = await prisma.event.findUnique({
       where: { id: Number(eventId) },
@@ -755,9 +914,20 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
     }
 
     const isMember = event.organization?.members.some((m) => m.userId === req.userId);
+    // Staff access checked later via resolveStaffAccess when available; ADMIN always allowed
     if (!isMember && req.role !== 'ADMIN') {
-      res.status(403).json({ message: 'Not authorized to add attendees to this event' });
-      return;
+      // Dynamically import staff resolver to avoid circular deps if module missing during partial deploy
+      try {
+        const { resolveStaffAccess } = await import('../services/staffAccess');
+        const access = await resolveStaffAccess(req.userId!, Number(eventId));
+        if (!access.allowed || !access.capabilities.includes('WALK_IN_SALE')) {
+          res.status(403).json({ message: 'Not authorized to add attendees to this event' });
+          return;
+        }
+      } catch {
+        res.status(403).json({ message: 'Not authorized to add attendees to this event' });
+        return;
+      }
     }
 
     // Get the ticket type
@@ -773,40 +943,70 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
     const qty = attendees && attendees.length > 0 ? attendees.length : Math.min(Math.max(1, Number(quantity)), 20);
     const tickets = [];
     const totalAmount = ticketType.price * qty;
-    
-    // Helper to find or create a user
-    const getOrCreateGuestUser = async (name: string, email?: string, phone?: string) => {
-      if (!email) return null;
-      const cleanEmail = email.trim().toLowerCase();
-      let guestUser = await prisma.user.findUnique({ where: { email: cleanEmail } });
-      if (!guestUser) {
-        const nameParts = name.trim().split(' ');
-        const firstName = nameParts[0] || 'Guest';
-        const lastName = nameParts.slice(1).join(' ') || 'Guest';
-        guestUser = await prisma.user.create({
-          data: {
-            email: cleanEmail,
-            firstName,
-            lastName,
-            phone: phone?.trim() || null,
-            isGuest: true,
-            role: 'USER',
-          }
-        });
+    const maxPerPerson = getMaxPerPerson(ticketType);
+
+    const resolveGuest = async (name: string, email?: string, phone?: string) => {
+      try {
+        const user = await getOrCreateGuestUser({ name, email, phone });
+        return user;
+      } catch (err: any) {
+        if (err?.message === 'CONTACT_REQUIRED') {
+          throw Object.assign(new Error('Each guest needs a valid email or phone number.'), { status: 400 });
+        }
+        if (err?.message === 'INVALID_EMAIL') {
+          throw Object.assign(new Error('Invalid email address.'), { status: 400 });
+        }
+        if (err?.message === 'INVALID_PHONE') {
+          throw Object.assign(new Error('Invalid phone number.'), { status: 400 });
+        }
+        throw err;
       }
-      return guestUser.id;
     };
 
     if (attendees && attendees.length > 0) {
-      // Multiple distinct attendees
+      // Per-identity qty counts (same details for all → one identity gets qty tickets)
+      const identityKey = (a: { email?: string; phone?: string }) =>
+        `${(a.email || '').trim().toLowerCase()}|${normalizePhone(a.phone || '') || ''}`;
+      const counts = new Map<string, number>();
+      for (const att of attendees) {
+        const key = identityKey(att);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+
+      for (const [key, count] of counts) {
+        const sample = attendees.find((a: { email?: string; phone?: string }) => identityKey(a) === key)!;
+        try {
+          await assertMaxPerPerson({
+            eventId: event.id,
+            ticketTypeId: ticketType.id,
+            quantity: count,
+            maxPerPerson,
+            email: sample.email,
+            phone: sample.phone,
+          });
+        } catch (limitErr: any) {
+          if (limitErr?.code === 'MAX_PER_PERSON') {
+            res.status(400).json({
+              message: limitErr.message,
+              code: 'MAX_PER_PERSON',
+              owned: limitErr.owned,
+              maxPerPerson: limitErr.maxPerPerson,
+              remaining: limitErr.remaining,
+            });
+            return;
+          }
+          throw limitErr;
+        }
+      }
+
       for (let i = 0; i < attendees.length; i++) {
         const att = attendees[i];
-        const guestUserId = await getOrCreateGuestUser(att.name, att.email, att.phone);
+        const guestUser = await resolveGuest(att.name, att.email, att.phone);
         const ticket = await prisma.ticket.create({
           data: {
             eventId: event.id,
             ticketTypeId: ticketType.id,
-            userId: guestUserId,
+            userId: guestUser.id,
             qrCode: `MANUAL-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
             purchaseType: 'GATE',
             status: checkInNow ? 'USED' : 'VALID',
@@ -815,11 +1015,11 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
         });
         tickets.push(ticket);
         
-        // Send email to individual attendee if email provided
-        if (att.email) {
+        const notifyEmail = att.email?.trim() || guestUser.email;
+        if (notifyEmail) {
           try {
             const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
-            const emailContent = generateTicketConfirmationEmail(att.email, {
+            const emailContent = generateTicketConfirmationEmail(notifyEmail, {
               ticketId: String(ticket.id),
               eventTitle: event.title,
               eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
@@ -828,9 +1028,11 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
               quantity: 1,
               totalPrice: ticketType.price,
               qrCode: ticket.qrCode,
+              ticketStyle: ticketType.ticketStyle,
+              accentColor: ticketType.accentColor,
             });
             await sendEmail({
-              to: att.email,
+              to: notifyEmail,
               subject: emailContent.subject,
               html: emailContent.html,
               text: emailContent.text,
@@ -841,14 +1043,36 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
         }
       }
     } else {
-      // Single buyer for multiple tickets
-      const guestUserId = await getOrCreateGuestUser(buyerName, buyerEmail, buyerPhone);
+      try {
+        await assertMaxPerPerson({
+          eventId: event.id,
+          ticketTypeId: ticketType.id,
+          quantity: qty,
+          maxPerPerson,
+          email: buyerEmail,
+          phone: buyerPhone,
+        });
+      } catch (limitErr: any) {
+        if (limitErr?.code === 'MAX_PER_PERSON') {
+          res.status(400).json({
+            message: limitErr.message,
+            code: 'MAX_PER_PERSON',
+            owned: limitErr.owned,
+            maxPerPerson: limitErr.maxPerPerson,
+            remaining: limitErr.remaining,
+          });
+          return;
+        }
+        throw limitErr;
+      }
+
+      const guestUser = await resolveGuest(buyerName, buyerEmail, buyerPhone);
       for (let i = 0; i < qty; i++) {
         const ticket = await prisma.ticket.create({
           data: {
             eventId: event.id,
             ticketTypeId: ticketType.id,
-            userId: guestUserId,
+            userId: guestUser.id,
             qrCode: `MANUAL-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
             purchaseType: 'GATE',
             status: checkInNow ? 'USED' : 'VALID',
@@ -858,12 +1082,12 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
         tickets.push(ticket);
       }
       
-      // Send single email for all tickets
-      if (buyerEmail && tickets.length > 0) {
+      const notifyEmail = buyerEmail?.trim() || guestUser.email;
+      if (tickets.length > 0 && notifyEmail) {
         try {
           const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
           const firstTicket = tickets[0];
-          const emailContent = generateTicketConfirmationEmail(buyerEmail, {
+          const emailContent = generateTicketConfirmationEmail(notifyEmail, {
             ticketId: tickets.map(t => t.id).join(', '),
             eventTitle: event.title,
             eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
@@ -872,9 +1096,11 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
             quantity: qty,
             totalPrice: totalAmount,
             qrCode: firstTicket.qrCode,
+            ticketStyle: ticketType.ticketStyle,
+            accentColor: ticketType.accentColor,
           });
           await sendEmail({
-            to: buyerEmail,
+            to: notifyEmail,
             subject: emailContent.subject,
             html: emailContent.html,
             text: emailContent.text,
@@ -890,8 +1116,12 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
       tickets,
       checkedIn: checkInNow,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error creating manual ticket:', error);
+    if (error?.status === 400) {
+      res.status(400).json({ message: error.message });
+      return;
+    }
     res.status(500).json({ message: 'Error registering attendee' });
   }
 };
@@ -908,5 +1138,6 @@ export default {
   requestTicketRecovery,
   verifyTicketRecovery,
   checkoutGuest,
+  checkTicketEligibility,
   manualTicket,
 };
