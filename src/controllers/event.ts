@@ -9,14 +9,33 @@ function createSlug(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
 }
 
+/** Path segments that must never be event slugs (collide with app routes). */
+const RESERVED_EVENT_SLUGS = new Set([
+  'create',
+  'new',
+  'edit',
+  'admin',
+  'organizer',
+  'events',
+  'login',
+  'register',
+  'api',
+  'scan',
+  'book',
+  'booking',
+]);
+
 // Generate a unique slug checking against the DB
 async function generateUniqueSlug(title: string, currentEventId?: number): Promise<string> {
-  const baseSlug = createSlug(title);
-  let slug = baseSlug || 'event';
+  let baseSlug = createSlug(title) || 'event';
+  if (RESERVED_EVENT_SLUGS.has(baseSlug)) {
+    baseSlug = `${baseSlug}-event`;
+  }
+  let slug = baseSlug;
   let counter = 1;
   while (true) {
     const existing = await prisma.event.findFirst({ where: { slug } });
-    if (!existing || existing.id === currentEventId) {
+    if ((!existing || existing.id === currentEventId) && !RESERVED_EVENT_SLUGS.has(slug)) {
       return slug;
     }
     slug = `${baseSlug}-${counter}`;
