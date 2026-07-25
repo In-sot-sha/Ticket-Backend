@@ -18,7 +18,7 @@ const app = express();
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
   : process.env.NODE_ENV === 'production'
-    ? ['https://partystorm.vercel.app', 'https://partystorm.ng']
+    ? ['https://partystorm.vercel.app', 'https://api.partystorm.ng', 'https://partystorm.ng']
     : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000', 'https://partystorm.vercel.app'];
 
 app.use(
