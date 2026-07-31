@@ -9,7 +9,7 @@ import {
 } from '../services/email';
 
 const frontendBase = () =>
-  (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+  (process.env.FRONTEND_URL || 'http://localhost:5181').replace(/\/$/, '');
 
 const paidOrderFilter = { status: 'PAID' as const };
 

@@ -14,7 +14,7 @@ function stringifyCaps(caps: unknown): string {
 }
 
 function staffUrls() {
-  const base = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+  const base = (process.env.FRONTEND_URL || 'http://localhost:5181').replace(/\/$/, '');
   return {
     loginUrl: `${base}/login`,
     staffHomeUrl: `${base}/staff`,

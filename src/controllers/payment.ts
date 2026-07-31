@@ -44,7 +44,7 @@ export const createOpayCashier = async (req: Request, res: Response) => {
     const amountInKobo = Math.round(Number(amount) * 100);
 
     // Determine frontend base URL (support both dev and prod)
-    const frontendBase = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const frontendBase = process.env.FRONTEND_URL || 'http://localhost:5181';
 
     if (opayMerchantId && opayPrivateKey) {
       // Real OPay Sandbox cashier request
