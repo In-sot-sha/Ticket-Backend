@@ -175,7 +175,8 @@ export const updateOrganizerProfile = async (req: AuthRequest, res: Response) =>
       payoutSchedule,
       taxId,
       vatNumber,
-      businessAddress
+      businessAddress,
+      absorbFee,
     } = req.body;
 
     const organization = await prisma.organization.findFirst({
@@ -203,13 +204,24 @@ export const updateOrganizerProfile = async (req: AuthRequest, res: Response) =>
         payoutSchedule: payoutSchedule !== undefined ? payoutSchedule : organization.payoutSchedule,
         taxId: taxId !== undefined ? taxId : organization.taxId,
         vatNumber: vatNumber !== undefined ? vatNumber : organization.vatNumber,
-        businessAddress: businessAddress !== undefined ? businessAddress : organization.businessAddress
+        businessAddress: businessAddress !== undefined ? businessAddress : organization.businessAddress,
+        ...(typeof absorbFee === 'boolean' ? { absorbFee } : {}),
       }
     });
 
+    // Best-effort: create/update Paystack subaccount when bank details present
+    try {
+      const { syncOrganizationSubaccount } = await import('./paystackPayment');
+      await syncOrganizationSubaccount(updatedOrg.id);
+    } catch (err) {
+      console.warn('[Organizer Profile] Subaccount sync skipped:', err);
+    }
+
+    const refreshed = await prisma.organization.findUnique({ where: { id: updatedOrg.id } });
+
     return res.json({
       message: 'Organizer profile updated successfully',
-      organization: updatedOrg
+      organization: refreshed || updatedOrg
     });
   } catch (error) {
     console.error(error);
@@ -308,3 +320,44 @@ export const getMyVendorApplications = async (req: AuthRequest, res: Response) =
     return res.status(500).json({ message: 'Server error' });
   }
 };
+
+// Fetch supported banks from Paystack (with local fallback)
+export const getBanks = async (req: AuthRequest, res: Response) => {
+  try {
+    const { listPaystackBanks } = await import('../services/paystack');
+    let banks: Array<{ name: string; code: string }> = [];
+    try {
+      banks = await listPaystackBanks('NGN');
+    } catch (e) {
+      console.warn('[GetBanks] Paystack bank list fetch fallback:', e);
+    }
+
+    if (!banks || banks.length === 0) {
+      banks = [
+        { name: 'Access Bank', code: '044' },
+        { name: 'Access Bank (Diamond)', code: '063' },
+        { name: 'ALAT by WEMA', code: '035A' },
+        { name: 'First Bank of Nigeria', code: '011' },
+        { name: 'First City Monument Bank (FCMB)', code: '214' },
+        { name: 'Guaranty Trust Bank (GTBank)', code: '058' },
+        { name: 'Kuda Bank', code: '50211' },
+        { name: 'Moniepoint MFB', code: '50515' },
+        { name: 'OPay Digital Services', code: '999992' },
+        { name: 'PalmPay', code: '999991' },
+        { name: 'Polaris Bank', code: '076' },
+        { name: 'Stanbic IBTC Bank', code: '221' },
+        { name: 'Sterling Bank', code: '232' },
+        { name: 'Union Bank of Nigeria', code: '032' },
+        { name: 'United Bank for Africa (UBA)', code: '033' },
+        { name: 'Wema Bank', code: '035' },
+        { name: 'Zenith Bank', code: '057' },
+      ];
+    }
+
+    return res.json({ banks });
+  } catch (error) {
+    console.error('[GetBanks] Error:', error);
+    return res.status(500).json({ message: 'Failed to fetch banks' });
+  }
+};
+

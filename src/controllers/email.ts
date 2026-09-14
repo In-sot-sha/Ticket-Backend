@@ -173,6 +173,16 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       qrCode: ticket.qrCode || undefined,
       ticketStyle: ticket.ticketType?.ticketStyle,
       accentColor: ticket.ticketType?.accentColor,
+      passes: ticket.qrCode
+        ? [
+            {
+              label: `TKT-${ticket.id.toString().padStart(6, '0')}`,
+              qrCode: ticket.qrCode,
+              ticketType: ticket.ticketType?.name || 'General Admission',
+              accentColor: ticket.ticketType?.accentColor,
+            },
+          ]
+        : undefined,
     });
 
     const sent = await sendEmail({

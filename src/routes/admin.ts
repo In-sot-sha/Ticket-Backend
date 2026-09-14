@@ -20,6 +20,7 @@ import {
   approvePayout,
   rejectPayout,
 } from '../controllers/admin';
+import { resolvePaystackPayment } from '../controllers/paystackPayment';
 import {
   listStaff,
   createStaff,
@@ -51,6 +52,7 @@ router.get('/revenue', getRevenue);
 router.get('/payouts', getPayoutRequests);
 router.post('/payouts/:id/approve', approvePayout);
 router.post('/payouts/:id/reject', rejectPayout);
+router.post('/payments/resolve', resolvePaystackPayment);
 router.get('/support/tickets', getSupportTickets);
 router.get('/support/tickets/:id', getSupportTicketById);
 router.post('/support/tickets/:id/replies', replyToSupportTicket);

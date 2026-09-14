@@ -28,6 +28,8 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
         payoutAccountNumber: true,
         payoutAccountName: true,
         payoutSchedule: true,
+        absorbFee: true,
+        paystackSubaccountCode: true,
       }
     });
 
@@ -42,18 +44,25 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
     });
     const eventIds = events.map(e => e.id);
 
-    // Sum of netAmount from PAID ONLINE orders and vendor applications for these events
+    // Sum of netAmount / fees from PAID ONLINE orders and vendor applications
     let totalEarnings = 0;
+    let grossSales = 0;
+    let platformFees = 0;
+    let processingFees = 0;
     if (eventIds.length > 0) {
       const [salesAggregate, vendorAggregate] = await Promise.all([
         prisma.order.aggregate({
           where: {
             eventId: { in: eventIds },
             status: 'PAID',
-            purchaseType: 'ONLINE' // CASH sales are pocketed directly at the gate
+            purchaseType: 'ONLINE'
           },
           _sum: {
-            netAmount: true
+            netAmount: true,
+            totalAmount: true,
+            platformFee: true,
+            processingFee: true,
+            chargeAmount: true,
           }
         }),
         prisma.vendorApplication.aggregate({
@@ -62,11 +71,23 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
             paymentStatus: 'PAID'
           },
           _sum: {
-            netAmount: true
+            netAmount: true,
+            paymentAmount: true,
+            platformFee: true,
+            processingFee: true,
           }
         })
       ]);
       totalEarnings = (salesAggregate?._sum?.netAmount ?? 0) + (vendorAggregate?._sum?.netAmount ?? 0);
+      grossSales =
+        (salesAggregate?._sum?.totalAmount ?? 0) +
+        (vendorAggregate?._sum?.paymentAmount ?? 0);
+      platformFees =
+        (salesAggregate?._sum?.platformFee ?? 0) +
+        (vendorAggregate?._sum?.platformFee ?? 0);
+      processingFees =
+        (salesAggregate?._sum?.processingFee ?? 0) +
+        (vendorAggregate?._sum?.processingFee ?? 0);
     }
 
     // Get completed payouts (status: PAID)
@@ -94,6 +115,10 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
     const totalPending = pendingPayoutsAggregate?._sum?.amount ?? 0;
 
     const availableBalance = Math.max(0, totalEarnings - totalPaidOut - totalPending);
+    const hasSubaccount = Boolean(organization.paystackSubaccountCode);
+    const settlementMode = hasSubaccount
+      ? 'PAYSTACK_SPLIT'
+      : 'PLATFORM_LEDGER';
 
     // Get all payouts history logs
     const payouts = await prisma.payout.findMany({
@@ -103,15 +128,21 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
 
     return res.json({
       totalEarnings,
+      grossSales,
+      platformFees,
+      processingFees,
       totalPaidOut,
       totalPending,
       availableBalance,
+      settlementMode,
       payouts,
       bankSettings: {
         payoutBankName: organization.payoutBankName,
         payoutAccountNumber: organization.payoutAccountNumber,
         payoutAccountName: organization.payoutAccountName,
         payoutSchedule: organization.payoutSchedule,
+        absorbFee: organization.absorbFee,
+        paystackConnected: hasSubaccount,
       }
     });
   } catch (error) {

@@ -11,6 +11,7 @@ import {
   findUsersByContact,
   countOwnedTickets,
 } from '../services/guestUser';
+import { calculateUnitOrderFees } from '../constants/fees';
 
 /**
  * Get all tickets for the authenticated user or for an event (by eventId param)
@@ -268,18 +269,22 @@ export const purchaseTicket = async (req: AuthRequest, res: Response) => {
         const user = await prisma.user.findUnique({ where: { id: req.userId } });
         if (user && user.email) {
           const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
-          const firstTicket = tickets[0];
           const emailContent = generateTicketConfirmationEmail(user.email, {
-            ticketId: tickets.map(t => t.id).join(', '),
+            ticketId: tickets.map((t) => `TKT-${t.id.toString().padStart(6, '0')}`).join(' · '),
             eventTitle: event.title,
             eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
             eventLocation: event.location || 'TBA',
             ticketType: ticketType.name,
             quantity,
             totalPrice: ticketType.price * quantity,
-            qrCode: firstTicket.qrCode,
             ticketStyle: ticketType.ticketStyle,
             accentColor: ticketType.accentColor,
+            passes: tickets.map((t) => ({
+              label: `TKT-${t.id.toString().padStart(6, '0')}`,
+              qrCode: t.qrCode,
+              ticketType: t.ticketType?.name || ticketType.name,
+              accentColor: t.ticketType?.accentColor || ticketType.accentColor,
+            })),
           });
           
           await sendEmail({
@@ -634,212 +639,103 @@ export const checkTicketEligibility = async (req: AuthRequest, res: Response) =>
 };
 
 /**
- * Checkout as guest
- * Add input validation for firstName, lastName, email, phone
+ * Checkout as guest (free tickets only).
+ * Paid tickets must use POST /payments/paystack/initialize + confirm.
  */
 export const checkoutGuest = async (req: AuthRequest, res: Response) => {
   try {
     const { firstName, lastName, email, phone, eventId, ticketTypeId, quantity } = req.body;
 
-    // Input validation for firstName
     if (!firstName || !isValidName(firstName)) {
       res.status(400).json({ message: 'Invalid first name' });
       return;
     }
-
-    // Input validation for lastName
     if (!lastName || !isValidName(lastName)) {
       res.status(400).json({ message: 'Invalid last name' });
       return;
     }
 
     const cleanEmail = email?.trim() ? String(email).trim().toLowerCase() : null;
-    const cleanPhone = phone ? normalizePhone(String(phone)) : null;
-
     if (!cleanEmail || !isValidEmail(cleanEmail)) {
       res.status(400).json({ message: 'A valid email address is required' });
       return;
     }
-    if (phone && !cleanPhone) {
-      res.status(400).json({ message: 'Invalid phone number' });
-      return;
-    }
-
-    // Validate ticket fields
     if (!eventId || !ticketTypeId || !quantity) {
       res.status(400).json({ message: 'Missing required fields for ticket' });
       return;
     }
 
-    // Sanitize string inputs
-    const sanitizedFirstName = sanitizeString(firstName);
-    const sanitizedLastName = sanitizeString(lastName);
-
-    // Check if event exists
     const event = await prisma.event.findUnique({
-      where: { id: eventId },
+      where: { id: Number(eventId) },
       include: { organization: true },
     });
-
     if (!event) {
       res.status(404).json({ message: 'Event not found' });
       return;
     }
 
-    // Check if ticket type exists
     const ticketType = await prisma.ticketType.findUnique({
-      where: { id: ticketTypeId },
+      where: { id: Number(ticketTypeId) },
     });
-
-    if (!ticketType) {
+    if (!ticketType || ticketType.eventId !== event.id) {
       res.status(404).json({ message: 'Ticket type not found' });
       return;
     }
 
-    let guestUser;
-    try {
-      guestUser = await getOrCreateGuestUser({
-        name: `${sanitizedFirstName} ${sanitizedLastName}`,
+    const absorbFee = event.organization?.absorbFee ?? false;
+    const fees = calculateUnitOrderFees(ticketType.price, Number(quantity), absorbFee);
+
+    if (fees.chargeAmount > 0) {
+      res.status(400).json({
+        message: 'Paid tickets require Paystack checkout. Use /payments/paystack/initialize then confirm.',
+        code: 'PAYMENT_REQUIRED',
+        chargeAmount: fees.chargeAmount,
+      });
+      return;
+    }
+
+    const {
+      fulfillTicketCheckout,
+    } = await import('../services/checkoutFulfillment');
+
+    const result = await fulfillTicketCheckout({
+      payload: {
+        firstName,
+        lastName,
         email: cleanEmail,
-        phone: cleanPhone,
-      });
-    } catch (err: any) {
-      if (err?.message === 'CONTACT_REQUIRED') {
-        res.status(400).json({ message: 'Email or phone number is required' });
-        return;
-      }
-      if (err?.message === 'INVALID_EMAIL') {
-        res.status(400).json({ message: 'Invalid email address' });
-        return;
-      }
-      if (err?.message === 'INVALID_PHONE') {
-        res.status(400).json({ message: 'Invalid phone number' });
-        return;
-      }
-      throw err;
-    }
-
-    // Backfill name if guest was found by contact only
-    if (guestUser.firstName === 'Guest' || !guestUser.firstName) {
-      guestUser = await prisma.user.update({
-        where: { id: guestUser.id },
-        data: { firstName: sanitizedFirstName, lastName: sanitizedLastName },
-      });
-    }
-
-    const maxPerPerson = getMaxPerPerson(ticketType);
-    try {
-      await assertMaxPerPerson({
+        phone,
         eventId: Number(eventId),
         ticketTypeId: Number(ticketTypeId),
         quantity: Number(quantity),
-        maxPerPerson,
-        email: cleanEmail || guestUser.email,
-        phone: cleanPhone || guestUser.phone,
-        extraUserIds: [guestUser.id],
-      });
-    } catch (limitErr: any) {
-      if (limitErr?.code === 'MAX_PER_PERSON') {
-        res.status(400).json({
-          message: limitErr.message,
-          code: 'MAX_PER_PERSON',
-          owned: limitErr.owned,
-          maxPerPerson: limitErr.maxPerPerson,
-          remaining: limitErr.remaining,
-        });
-        return;
-      }
-      throw limitErr;
-    }
-
-    // Use database transaction to ensure order + tickets are created atomically
-    const result = await prisma.$transaction(async (tx) => {
-      // Calculate totals based on host settings
-      const serviceFeePercent = event.organization?.serviceFeePercent ?? 5.0;
-      const absorbFee = event.organization?.absorbFee ?? false;
-
-      const totalAmount = ticketType.price * quantity;
-      const platformFee = totalAmount > 0 ? Math.round(totalAmount * (serviceFeePercent / 100)) : 0;
-      const processingFee = totalAmount > 0 ? Math.round((totalAmount * 0.015) + 100) : 0;
-      const netAmount = absorbFee
-        ? Math.max(0, totalAmount - platformFee - processingFee)
-        : Math.max(0, totalAmount - processingFee);
-
-      // Create order first
-      const order = await tx.order.create({
-        data: {
-          userId: guestUser.id,
-          eventId,
-          totalAmount,
-          platformFee,
-          processingFee,
-          netAmount,
-          status: 'PAID',
-          purchaseType: 'ONLINE',
-        },
-      });
-
-      // Create tickets linked to the order
-      const tickets = [];
-      for (let i = 0; i < quantity; i++) {
-        const ticket = await tx.ticket.create({
-          data: {
-            eventId,
-            ticketTypeId,
-            userId: guestUser.id,
-            qrCode: `QR-${Date.now()}-${i}-${Math.random()}`,
-            purchaseType: 'ONLINE',
-            orderId: order.id,
-          },
-          include: {
-            event: true,
-            ticketType: true,
-          },
-        });
-        tickets.push(ticket);
-      }
-
-      return { order, tickets };
+      },
+      paymentReference: null,
+      fees: {
+        subtotal: fees.subtotal,
+        platformFee: fees.platformFee,
+        processingFee: fees.processingFee,
+        netAmount: fees.netAmount,
+        chargeAmount: fees.chargeAmount,
+      },
     });
-
-    // Send email only when buyer has an email
-    const notifyEmail = cleanEmail || guestUser.email;
-    if (notifyEmail) {
-      try {
-        const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
-        const firstTicket = result.tickets[0];
-        const emailContent = generateTicketConfirmationEmail(notifyEmail, {
-          ticketId: result.tickets.map(t => t.id).join(', '),
-          eventTitle: event.title,
-          eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
-          eventLocation: event.location || 'TBA',
-          ticketType: ticketType.name,
-          quantity,
-          totalPrice: result.order.totalAmount,
-          qrCode: firstTicket.qrCode,
-          ticketStyle: ticketType.ticketStyle,
-          accentColor: ticketType.accentColor,
-        });
-        
-        await sendEmail({
-          to: notifyEmail,
-          subject: emailContent.subject,
-          html: emailContent.html,
-          text: emailContent.text,
-        });
-      } catch (err) {
-        console.error('Failed to send guest checkout ticket email:', err);
-      }
-    }
 
     res.status(201).json({
       message: 'Guest checkout successful',
-      user: guestUser,
+      user: result.user,
       order: result.order,
       tickets: result.tickets,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error during guest checkout:', error);
+    if (error.status) {
+      res.status(error.status).json({
+        message: error.message,
+        code: error.code,
+        owned: error.owned,
+        maxPerPerson: error.maxPerPerson,
+        remaining: error.remaining,
+      });
+      return;
+    }
     res.status(500).json({ message: 'Error during guest checkout' });
   }
 };
@@ -1030,6 +926,14 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
               qrCode: ticket.qrCode,
               ticketStyle: ticketType.ticketStyle,
               accentColor: ticketType.accentColor,
+              passes: [
+                {
+                  label: `TKT-${ticket.id.toString().padStart(6, '0')}`,
+                  qrCode: ticket.qrCode,
+                  ticketType: ticketType.name,
+                  accentColor: ticketType.accentColor,
+                },
+              ],
             });
             await sendEmail({
               to: notifyEmail,
@@ -1086,18 +990,24 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
       if (tickets.length > 0 && notifyEmail) {
         try {
           const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
-          const firstTicket = tickets[0];
           const emailContent = generateTicketConfirmationEmail(notifyEmail, {
-            ticketId: tickets.map(t => t.id).join(', '),
+            ticketId: tickets
+              .map((t) => `TKT-${t.id.toString().padStart(6, '0')}`)
+              .join(' · '),
             eventTitle: event.title,
             eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
             eventLocation: event.location || 'TBA',
             ticketType: ticketType.name,
             quantity: qty,
             totalPrice: totalAmount,
-            qrCode: firstTicket.qrCode,
             ticketStyle: ticketType.ticketStyle,
             accentColor: ticketType.accentColor,
+            passes: tickets.map((t) => ({
+              label: `TKT-${t.id.toString().padStart(6, '0')}`,
+              qrCode: t.qrCode,
+              ticketType: t.ticketType?.name || ticketType.name,
+              accentColor: t.ticketType?.accentColor || ticketType.accentColor,
+            })),
           });
           await sendEmail({
             to: notifyEmail,

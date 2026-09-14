@@ -50,7 +50,17 @@ app.use(compression({
 }));
 
 // ── Body parsers ──────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '10mb' }));
+// Capture raw body for Paystack webhook signature verification
+app.use(
+  express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => {
+      if (req.url?.includes('/payments/paystack/webhook')) {
+        (req as any).rawBody = buf;
+      }
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ── Local uploads (dev only — Cloudinary is used in production) ──────────────

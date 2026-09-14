@@ -179,10 +179,16 @@ export const deleteVendorType = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ message: 'Vendor type not found or you do not have permission to delete it' });
     }
 
-    // Delete any related vendor applications first (due to foreign key constraints)
-    await prisma.vendorApplication.deleteMany({
+    // Check if any vendors have applied or purchased this stall type
+    const applicationsCount = await prisma.vendorApplication.count({
       where: { vendorTypeId: Number(id) }
     });
+
+    if (applicationsCount > 0) {
+      return res.status(400).json({
+        message: 'Cannot delete a stall package that vendors have already applied for or purchased. You can turn it off instead to pause further bookings.'
+      });
+    }
 
     // Delete the vendor type
     await prisma.vendorType.delete({

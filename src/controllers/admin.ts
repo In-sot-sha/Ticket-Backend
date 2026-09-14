@@ -743,6 +743,7 @@ export const promoteEvent = async (req: AuthRequest, res: Response) => {
       data: {
         isPromoted: Boolean(isPromoted),
         promotedUntil: promotedUntil ? new Date(promotedUntil) : null,
+        ...(isPromoted ? { promotionRequestedAt: null } : {}),
       },
     });
 

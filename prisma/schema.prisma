@@ -125,9 +125,12 @@ model Organization {
   vatNumber       String?
   businessAddress String? @db.Text
 
-  // Fee settings
-  serviceFeePercent Float   @default(5.0)
+  // Fee settings (platform rate is fixed in code; absorbFee is per-org)
+  serviceFeePercent Float   @default(6.0)
   absorbFee         Boolean @default(false)
+
+  // Paystack marketplace split (created when payout bank is saved)
+  paystackSubaccountCode String?
 
   // Relations
   owner     User                     @relation("OwnedOrganizations", fields: [ownerId], references: [id])
@@ -187,6 +190,8 @@ model Event {
   isPublished    Boolean  @default(false)
   isPromoted     Boolean  @default(false)
   promotedUntil  DateTime?
+  /** Organizer requested homepage / featured placement */
+  promotionRequestedAt DateTime?
   latitude       Float? // GPS latitude for event location
   longitude      Float? // GPS longitude for event location
   createdAt      DateTime @default(now())
@@ -213,6 +218,12 @@ model Event {
   vendorTypes        VendorType[] // Support multiple vendor types per event
   vendorApplications VendorApplication[]
 
+  // Automated & lifecycle email fields
+  autoReminder24hSent  DateTime?
+  autoPostEventSent    DateTime?
+  autoReminderEnabled  Boolean   @default(true)
+  autoPostEventEnabled Boolean   @default(true)
+
   // Relations
   organization Organization? @relation(fields: [organizationId], references: [id])
   tickets      Ticket[]
@@ -225,21 +236,47 @@ model Event {
 
 // Order model to replace redundant TicketPurchase
 model Order {
-  id            Int           @id @default(autoincrement())
-  userId        Int // User who made the order
-  eventId       Int
-  totalAmount   Float         @default(0)
-  platformFee   Float         @default(0)
-  processingFee Float         @default(0)
-  netAmount     Float         @default(0)
-  status        PaymentStatus @default(PENDING)
-  purchaseType  PurchaseType  @default(ONLINE)
-  createdAt     DateTime      @default(now())
+  id               Int           @id @default(autoincrement())
+  userId           Int // User who made the order
+  eventId          Int
+  totalAmount      Float         @default(0)
+  platformFee      Float         @default(0)
+  processingFee    Float         @default(0)
+  netAmount        Float         @default(0)
+  chargeAmount     Float         @default(0) // What the buyer paid (incl. fees when not absorbed)
+  paymentReference String?       @unique
+  status           PaymentStatus @default(PENDING)
+  purchaseType     PurchaseType  @default(ONLINE)
+  createdAt        DateTime      @default(now())
 
   // Relations
   user    User     @relation(fields: [userId], references: [id])
   event   Event    @relation(fields: [eventId], references: [id])
   tickets Ticket[]
+}
+
+/// Pending / fulfilled Paystack (or free) checkout before tickets/vendor apps exist
+model PaymentIntent {
+  id             Int       @id @default(autoincrement())
+  reference      String    @unique
+  kind           String // TICKET | VENDOR
+  status         String    @default("PENDING") // PENDING | FULFILLED | FAILED
+  eventId        Int
+  amountKobo     Int
+  chargeAmount   Float
+  subtotal       Float     @default(0)
+  platformFee    Float     @default(0)
+  processingFee  Float     @default(0)
+  netAmount      Float     @default(0)
+  absorbFee      Boolean   @default(false)
+  payload        String    @db.Text // JSON checkout details
+  orderId        Int?
+  paystackStatus String?
+  createdAt      DateTime  @default(now())
+  fulfilledAt    DateTime?
+
+  @@index([status])
+  @@index([eventId])
 }
 
 model Payout {

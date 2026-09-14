@@ -323,8 +323,35 @@ export const getEvents = async (req: Request, res: Response) => {
 
     const total = await prisma.event.count({ where: whereClause });
 
+    const eventIds = events.map((e) => e.id);
+    const soldByEvent =
+      eventIds.length > 0
+        ? await prisma.ticket.groupBy({
+            by: ['eventId'],
+            where: {
+              eventId: { in: eventIds },
+              status: { in: [TicketStatus.VALID, TicketStatus.USED] },
+            },
+            _count: { id: true },
+          })
+        : [];
+    const soldMap = new Map(soldByEvent.map((row) => [row.eventId, row._count.id]));
+
+    const eventsWithAvailability = events.map((event) => {
+      const inventory = (event.ticketTypes || []).reduce(
+        (sum, t) => sum + (t.quantity ?? 0),
+        0
+      );
+      const ticketsSold = soldMap.get(event.id) || 0;
+      return {
+        ...event,
+        ticketsSold,
+        ticketsAvailable: Math.max(0, inventory - ticketsSold),
+      };
+    });
+
     const responseData = {
-      events,
+      events: eventsWithAvailability,
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -425,10 +452,26 @@ export const getEvent = async (req: Request, res: Response) => {
 
     const formattedEvent = formatEventWithSettings(event);
 
-    // Cache for 2 minutes
-    await cacheSet(cacheKey, formattedEvent, 120);
+    const inventory = (event.ticketTypes || []).reduce(
+      (sum: number, t: { quantity: number | null }) => sum + (t.quantity ?? 0),
+      0
+    );
+    const ticketsSold = await prisma.ticket.count({
+      where: {
+        eventId: event.id,
+        status: { in: [TicketStatus.VALID, TicketStatus.USED] },
+      },
+    });
+    const withAvailability = {
+      ...formattedEvent,
+      ticketsSold,
+      ticketsAvailable: Math.max(0, inventory - ticketsSold),
+    };
 
-    return res.json(formattedEvent);
+    // Cache for 2 minutes
+    await cacheSet(cacheKey, withAvailability, 120);
+
+    return res.json(withAvailability);
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
