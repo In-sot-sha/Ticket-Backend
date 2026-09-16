@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { register, login, getProfile, updateProfile, uploadAvatar, googleLogin, refreshToken } from '../controllers/user';
+import { register, login, getProfile, updateProfile, uploadAvatar, googleLogin, refreshToken, changePassword } from '../controllers/user';
 import { verifyToken } from '../middleware/auth';
 import { upload } from '../utils/upload';
 
@@ -15,5 +15,6 @@ router.post('/refresh-token', refreshToken); // Does NOT require verifyToken - a
 router.get('/profile', verifyToken, getProfile);
 router.put('/profile', verifyToken, updateProfile);
 router.post('/profile/avatar', verifyToken, upload.single('avatar'), uploadAvatar);
+router.post('/change-password', verifyToken, changePassword);
 
 export default router;

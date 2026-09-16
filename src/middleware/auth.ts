@@ -105,3 +105,38 @@ export const requireRole = (...roles: string[]) => {
     return; // Explicitly return to satisfy TypeScript
   };
 };
+
+export const requireAdminOrActiveStaff = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({ message: 'Access denied. No token provided.' });
+      return;
+    }
+
+    if (req.role === 'ADMIN') {
+      next();
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: {
+        isStaff: true,
+        staffProfile: { select: { active: true } },
+      },
+    });
+
+    if (user?.isStaff && user.staffProfile?.active !== false) {
+      next();
+      return;
+    }
+
+    res.status(403).json({ message: 'Access denied. Staff or admin required.' });
+  } catch {
+    res.status(500).json({ message: 'Server error' });
+  }
+};

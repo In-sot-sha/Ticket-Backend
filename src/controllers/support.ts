@@ -1,6 +1,16 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
+import {
+  sendEmail,
+  generateSupportReceivedEmail,
+} from '../services/email';
+
+const frontendBase = () =>
+  (process.env.FRONTEND_URL || 'http://localhost:5181').replace(/\/$/, '');
+
+const isValidEmail = (email: string) =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
 
 export const createSupportTicket = async (req: AuthRequest, res: Response) => {
   try {
@@ -10,15 +20,26 @@ export const createSupportTicket = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ message: 'Subject and message are required' });
     }
 
-    const email = contactEmail || (req.userId
-      ? (await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true } }))?.email
-      : null);
+    let email =
+      (typeof contactEmail === 'string' && contactEmail.trim()) ||
+      (req.userId
+        ? (
+            await prisma.user.findUnique({
+              where: { id: req.userId },
+              select: { email: true },
+            })
+          )?.email
+        : null);
 
-    if (!email) {
-      return res.status(400).json({ message: 'Contact email is required' });
+    if (!email || !isValidEmail(email)) {
+      return res.status(400).json({
+        message: 'A valid contact email is required so we can reply to you.',
+      });
     }
 
-    let name = contactName;
+    email = email.trim().toLowerCase();
+
+    let name = typeof contactName === 'string' ? contactName.trim() : '';
     if (!name && req.userId) {
       const user = await prisma.user.findUnique({
         where: { id: req.userId },
@@ -31,7 +52,7 @@ export const createSupportTicket = async (req: AuthRequest, res: Response) => {
       data: {
         userId: req.userId ?? null,
         contactEmail: email,
-        contactName: name ?? null,
+        contactName: name || null,
         subject: subject.trim(),
         category: category || 'GENERAL',
         messages: {
@@ -47,7 +68,19 @@ export const createSupportTicket = async (req: AuthRequest, res: Response) => {
       },
     });
 
-    return res.status(201).json({ message: 'Support ticket created', ticket });
+    const tpl = generateSupportReceivedEmail({
+      name: name || null,
+      subject: ticket.subject,
+      ticketId: ticket.id,
+      supportUrl: `${frontendBase()}/support`,
+    });
+    void sendEmail({ to: email, subject: tpl.subject, html: tpl.html, text: tpl.text });
+
+    return res.status(201).json({
+      message: 'Support ticket created',
+      ticket,
+      emailSent: true,
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -56,11 +89,15 @@ export const createSupportTicket = async (req: AuthRequest, res: Response) => {
 
 export const getMySupportTickets = async (req: AuthRequest, res: Response) => {
   try {
+    const me = await prisma.user.findUnique({
+      where: { id: req.userId! },
+      select: { email: true },
+    });
     const tickets = await prisma.supportTicket.findMany({
       where: {
         OR: [
           { userId: req.userId! },
-          { contactEmail: (await prisma.user.findUnique({ where: { id: req.userId! }, select: { email: true } }))?.email },
+          ...(me?.email ? [{ contactEmail: me.email }] : []),
         ],
       },
       include: {
@@ -84,12 +121,18 @@ export const getMySupportTickets = async (req: AuthRequest, res: Response) => {
 export const getMySupportTicketById = async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const user = await prisma.user.findUnique({ where: { id: req.userId! }, select: { email: true } });
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId! },
+      select: { email: true },
+    });
 
     const ticket = await prisma.supportTicket.findFirst({
       where: {
         id,
-        OR: [{ userId: req.userId! }, { contactEmail: user?.email }],
+        OR: [
+          { userId: req.userId! },
+          ...(user?.email ? [{ contactEmail: user.email }] : []),
+        ],
       },
       include: {
         messages: {
@@ -118,11 +161,17 @@ export const replyToMySupportTicket = async (req: AuthRequest, res: Response) =>
       return res.status(400).json({ message: 'Message is required' });
     }
 
-    const user = await prisma.user.findUnique({ where: { id: req.userId! }, select: { email: true } });
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId! },
+      select: { email: true },
+    });
     const ticket = await prisma.supportTicket.findFirst({
       where: {
         id,
-        OR: [{ userId: req.userId! }, { contactEmail: user?.email }],
+        OR: [
+          { userId: req.userId! },
+          ...(user?.email ? [{ contactEmail: user.email }] : []),
+        ],
       },
     });
 

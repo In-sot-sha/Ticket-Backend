@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -66,16 +66,18 @@ enum SupportTicketCategory {
 
 model User {
   id             Int      @id @default(autoincrement())
-  email          String   @unique
+  email          String?  @unique
   password       String?
   authProvider   String   @default("local")
   authProviderId String?  @unique
   firstName      String
   lastName       String
-  phone          String?
+  phone          String?  @unique
   role           UserRole @default(USER)
   isVerified     Boolean  @default(false)
   isGuest        Boolean  @default(false)
+  isStaff        Boolean  @default(false)
+  mustChangePassword Boolean @default(false)
   avatar         String?
 
   createdAt DateTime @default(now())
@@ -93,6 +95,9 @@ model User {
   errorLogs              ErrorLog[]               @relation("ErrorLogs")
   supportTickets         SupportTicket[]
   supportMessages        SupportTicketMessage[]
+  staffProfile           StaffProfile?
+  staffOrgCoverages      StaffOrgCoverage[]
+  staffProjectAssignments StaffProjectAssignment[]
 }
 
 model Organization {
@@ -120,9 +125,12 @@ model Organization {
   vatNumber       String?
   businessAddress String? @db.Text
 
-  // Fee settings
-  serviceFeePercent Float   @default(5.0)
+  // Fee settings (platform rate is fixed in code; absorbFee is per-org)
+  serviceFeePercent Float   @default(6.0)
   absorbFee         Boolean @default(false)
+
+  // Paystack marketplace split (created when payout bank is saved)
+  paystackSubaccountCode String?
 
   // Relations
   owner     User                     @relation("OwnedOrganizations", fields: [ownerId], references: [id])
@@ -131,6 +139,8 @@ model Organization {
   events    Event[]
   gatePins  GatePin[]
   payouts   Payout[]
+  staffCoverages StaffOrgCoverage[]
+  opsProjects    OpsProject[]
 }
 
 model OrganizationMember {
@@ -180,6 +190,8 @@ model Event {
   isPublished    Boolean  @default(false)
   isPromoted     Boolean  @default(false)
   promotedUntil  DateTime?
+  /** Organizer requested homepage / featured placement */
+  promotionRequestedAt DateTime?
   latitude       Float? // GPS latitude for event location
   longitude      Float? // GPS longitude for event location
   createdAt      DateTime @default(now())
@@ -206,10 +218,17 @@ model Event {
   vendorTypes        VendorType[] // Support multiple vendor types per event
   vendorApplications VendorApplication[]
 
+  // Automated & lifecycle email fields
+  autoReminder24hSent  DateTime?
+  autoPostEventSent    DateTime?
+  autoReminderEnabled  Boolean   @default(true)
+  autoPostEventEnabled Boolean   @default(true)
+
   // Relations
   organization Organization? @relation(fields: [organizationId], references: [id])
   tickets      Ticket[]
   orders       Order[]
+  opsProjects  OpsProject[]
 
   @@index([isPublished, startDate])
   @@index([category])
@@ -217,21 +236,47 @@ model Event {
 
 // Order model to replace redundant TicketPurchase
 model Order {
-  id            Int           @id @default(autoincrement())
-  userId        Int // User who made the order
-  eventId       Int
-  totalAmount   Float         @default(0)
-  platformFee   Float         @default(0)
-  processingFee Float         @default(0)
-  netAmount     Float         @default(0)
-  status        PaymentStatus @default(PENDING)
-  purchaseType  PurchaseType  @default(ONLINE)
-  createdAt     DateTime      @default(now())
+  id               Int           @id @default(autoincrement())
+  userId           Int // User who made the order
+  eventId          Int
+  totalAmount      Float         @default(0)
+  platformFee      Float         @default(0)
+  processingFee    Float         @default(0)
+  netAmount        Float         @default(0)
+  chargeAmount     Float         @default(0) // What the buyer paid (incl. fees when not absorbed)
+  paymentReference String?       @unique
+  status           PaymentStatus @default(PENDING)
+  purchaseType     PurchaseType  @default(ONLINE)
+  createdAt        DateTime      @default(now())
 
   // Relations
   user    User     @relation(fields: [userId], references: [id])
   event   Event    @relation(fields: [eventId], references: [id])
   tickets Ticket[]
+}
+
+/// Pending / fulfilled Paystack (or free) checkout before tickets/vendor apps exist
+model PaymentIntent {
+  id             Int       @id @default(autoincrement())
+  reference      String    @unique
+  kind           String // TICKET | VENDOR
+  status         String    @default("PENDING") // PENDING | FULFILLED | FAILED
+  eventId        Int
+  amountKobo     Int
+  chargeAmount   Float
+  subtotal       Float     @default(0)
+  platformFee    Float     @default(0)
+  processingFee  Float     @default(0)
+  netAmount      Float     @default(0)
+  absorbFee      Boolean   @default(false)
+  payload        String    @db.Text // JSON checkout details
+  orderId        Int?
+  paystackStatus String?
+  createdAt      DateTime  @default(now())
+  fulfilledAt    DateTime?
+
+  @@index([status])
+  @@index([eventId])
 }
 
 model Payout {
@@ -314,6 +359,8 @@ model TicketType {
   badgeText      String? // Custom label on the ticket stub (defaults to ticket name)
   ticketHeadline String? // e.g. "COME AND JOIN"
   venueLabel     String? // e.g. "LIVE AT"
+  /** Organizer closed sales for this type (e.g. a past day pass). Existing tickets stay valid. */
+  isPaused       Boolean  @default(false)
   maxPerPerson   Int?     @default(5)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -443,3 +490,74 @@ model Otp {
   @@index([contact])
   @@index([expiresAt])
 }
+
+// ── PartyStorm staffing / ops coverage ───────────────────────────────────────
+
+model StaffProfile {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @unique
+  capabilities String   @db.Text // JSON array: SCAN, WALK_IN_SALE, CHECK_IN, GATE_MANAGE, SUPPORT
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model StaffOrgCoverage {
+  id                   Int      @id @default(autoincrement())
+  userId               Int
+  organizationId       Int
+  capabilitiesOverride String?  @db.Text // optional JSON array
+  createdAt            DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+enum OpsProjectStatus {
+  REQUESTED
+  ACTIVE
+  LINKED
+  CLOSED
+}
+
+model OpsProject {
+  id             Int              @id @default(autoincrement())
+  title          String
+  organizationId Int?
+  eventId        Int?
+  status         OpsProjectStatus @default(REQUESTED)
+  services       String           @db.Text // JSON array of service tags
+  notes          String?          @db.Text
+  windowStart    DateTime?
+  windowEnd      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  event        Event?        @relation(fields: [eventId], references: [id])
+  assignments  StaffProjectAssignment[]
+
+  @@index([status])
+  @@index([organizationId])
+  @@index([eventId])
+}
+
+model StaffProjectAssignment {
+  id                   Int      @id @default(autoincrement())
+  projectId            Int
+  userId               Int
+  capabilitiesOverride String?  @db.Text
+  createdAt            DateTime @default(now())
+
+  project OpsProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+

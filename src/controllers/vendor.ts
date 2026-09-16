@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/auth';
+import { calculateUnitOrderFees } from '../constants/fees';
 
 // Register a vendor for an event
 // No separate vendorId required — uses userId + inline snapshot fields
@@ -10,7 +11,6 @@ export const registerVendor = async (req: AuthRequest, res: Response) => {
       eventId,
       vendorTypeId,
       vendorType,
-      paymentAmount,
       paymentReference,
       // Inline snapshot fields
       businessName,
@@ -87,19 +87,10 @@ export const registerVendor = async (req: AuthRequest, res: Response) => {
     // Look up user's saved Vendor business card (optional — for email + vendorId reference)
     const savedVendorCard = await prisma.vendor.findFirst({ where: { userId: req.userId! } });
 
-    // Calculate service charge (platform fee), processing fee, and net amount
-    const serviceFeePercent = event.organization?.serviceFeePercent ?? 5.0;
+    // Calculate PartyStorm + Paystack fees (same rules as ticket checkout)
     const absorbFee = event.organization?.absorbFee ?? false;
     const baseFee = vendorTypeDetails!.fee || 0;
-
-    const platformFee = baseFee > 0 ? Math.round(baseFee * (serviceFeePercent / 100)) : 0;
-    const processingFee = baseFee > 0 ? Math.round((baseFee * 0.015) + 100) : 0;
-
-    // Vendor pays booth fee + service fee if not absorbed
-    const calculatedPaymentAmount = absorbFee ? baseFee : (baseFee + platformFee);
-    const netAmount = absorbFee
-      ? Math.max(0, baseFee - platformFee - processingFee)
-      : Math.max(0, baseFee - processingFee);
+    const fees = calculateUnitOrderFees(baseFee, baseFee > 0 ? 1 : 0, absorbFee);
 
     // Determine initial status based on event auto-approval settings
     const initialStatus = (event as any).vendorApprovalMode === 'auto' ? 'APPROVED' : 'PENDING';
@@ -119,12 +110,12 @@ export const registerVendor = async (req: AuthRequest, res: Response) => {
         category: category || savedVendorCard?.category || null,
         staffCount: staffCount || null,
         applicationStatus: initialStatus as any,
-        paymentAmount: paymentAmount || calculatedPaymentAmount,
+        paymentAmount: fees.chargeAmount,
         paymentReference: paymentReference || null,
-        paymentStatus: paymentReference ? 'PAID' : (calculatedPaymentAmount === 0 ? 'PAID' : 'PENDING'),
-        platformFee,
-        processingFee,
-        netAmount,
+        paymentStatus: paymentReference ? 'PAID' : (fees.chargeAmount === 0 ? 'PAID' : 'PENDING'),
+        platformFee: fees.platformFee,
+        processingFee: fees.processingFee,
+        netAmount: fees.netAmount,
       }
     });
 
@@ -265,7 +256,7 @@ export const getVendorApplicationById = async (req: Request, res: Response) => {
 export const updateVendorApplicationStatus = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { applicationStatus, paymentStatus } = req.body;
+    const { applicationStatus, paymentStatus, stallNumber } = req.body;
 
     // Get the vendor application to check if the current user is the event organizer
     const vendorApplication = await prisma.vendorApplication.findUnique({
@@ -309,6 +300,9 @@ export const updateVendorApplicationStatus = async (req: AuthRequest, res: Respo
       data: {
         applicationStatus,
         paymentStatus: paymentStatus !== undefined ? paymentStatus : vendorApplication.paymentStatus,
+        ...(stallNumber !== undefined && {
+          stallNumber: stallNumber === null || stallNumber === '' ? null : String(stallNumber).trim(),
+        }),
         ...(applicationStatus === 'APPROVED' && { approvedAt: new Date() }),
         ...(applicationStatus === 'REJECTED' && { rejectedAt: new Date() })
       }

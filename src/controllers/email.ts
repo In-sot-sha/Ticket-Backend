@@ -1,17 +1,21 @@
 import { Request, Response } from 'express';
-import { sendEmail, generateOTPEmail, generateWelcomeEmail, generateTicketConfirmationEmail } from '../services/email';
-import { createOTP, verifyOTP, consumeOTP, isOTPVerified } from '../services/otp';
+import {
+  sendEmail,
+  generateOTPEmail,
+  generateWelcomeEmail,
+  generateTicketConfirmationEmail,
+  emailLayout,
+  getEmailPreview,
+  EMAIL_PREVIEW_IDS,
+  type EmailPreviewId,
+} from '../services/email';
+import { createOTP, verifyOTP } from '../services/otp';
 import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
 import validator from 'email-validator';
 
-// ── Email validation helper ──────────────────────────────────────────────────
+const isValidEmail = (email: string): boolean => validator.validate(email);
 
-const isValidEmail = (email: string): boolean => {
-  return validator.validate(email);
-};
-
-// ── POST /emails/send-otp  — Send OTP to email (public, rate-limited recommended) ──
 export const sendOTP = async (req: Request, res: Response) => {
   try {
     const { email } = req.body as { email?: string };
@@ -20,16 +24,12 @@ export const sendOTP = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Valid email address is required.' });
     }
 
-    // Check if email already exists (for registration flow)
     const existingUser = await prisma.user.findUnique({ where: { email } });
     if (existingUser) {
       return res.status(409).json({ message: 'Email already registered. Please log in.' });
     }
 
-    // Generate OTP (now async)
     const { code, expiresIn } = await createOTP(email);
-
-    // Send OTP email
     const emailTemplate = generateOTPEmail(email, code, expiresIn);
     const sent = await sendEmail({
       to: email,
@@ -52,7 +52,6 @@ export const sendOTP = async (req: Request, res: Response) => {
   }
 };
 
-// ── POST /emails/verify-otp  — Verify OTP code (public) ──────────────────────
 export const verifyEmailOTP = async (req: Request, res: Response) => {
   try {
     const { email, code } = req.body as { email?: string; code?: string };
@@ -65,7 +64,6 @@ export const verifyEmailOTP = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Valid 6-digit OTP is required.' });
     }
 
-    // Verify the OTP (now async)
     const result = await verifyOTP(email, code);
 
     if (!result.valid) {
@@ -82,7 +80,6 @@ export const verifyEmailOTP = async (req: Request, res: Response) => {
   }
 };
 
-// ── POST /emails/send-welcome  — Send welcome email after signup ────────────
 export const sendWelcomeEmail = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId;
@@ -90,15 +87,15 @@ export const sendWelcomeEmail = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ message: 'Unauthorized.' });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-    });
+    const user = await prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
       return res.status(404).json({ message: 'User not found.' });
     }
+    if (!user.email) {
+      return res.status(400).json({ message: 'This account has no email on file.' });
+    }
 
-    // Send welcome email
     const emailTemplate = generateWelcomeEmail(user.firstName || 'there');
     const sent = await sendEmail({
       to: user.email,
@@ -118,7 +115,6 @@ export const sendWelcomeEmail = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// ── POST /emails/send-ticket-confirmation  — Send ticket purchase confirmation ──
 export const sendTicketConfirmation = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId;
@@ -132,7 +128,6 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       return res.status(400).json({ message: 'ticketId and eventId are required.' });
     }
 
-    // Fetch ticket details
     const ticket = await prisma.ticket.findUnique({
       where: { id: ticketId },
       include: {
@@ -146,17 +141,14 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       return res.status(404).json({ message: 'Ticket not found.' });
     }
 
-    // Verify ownership
     if (ticket.userId !== userId) {
       return res.status(403).json({ message: 'Forbidden.' });
     }
 
-    // Check if user exists
     if (!ticket.user) {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Format event date
     const eventDate = new Date(ticket.event.startDate).toLocaleDateString('en-US', {
       weekday: 'long',
       year: 'numeric',
@@ -166,7 +158,10 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       minute: '2-digit',
     });
 
-    // Send ticket confirmation email
+    if (!ticket.user?.email) {
+      return res.status(400).json({ message: 'This ticket has no email on file.' });
+    }
+
     const emailTemplate = generateTicketConfirmationEmail(ticket.user.email, {
       ticketId: `TKT-${ticket.id.toString().padStart(6, '0')}`,
       eventTitle: ticket.event.title,
@@ -175,6 +170,19 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       ticketType: ticket.ticketType?.name || 'General Admission',
       quantity: 1,
       totalPrice: ticket.ticketType?.price || 0,
+      qrCode: ticket.qrCode || undefined,
+      ticketStyle: ticket.ticketType?.ticketStyle,
+      accentColor: ticket.ticketType?.accentColor,
+      passes: ticket.qrCode
+        ? [
+            {
+              label: `TKT-${ticket.id.toString().padStart(6, '0')}`,
+              qrCode: ticket.qrCode,
+              ticketType: ticket.ticketType?.name || 'General Admission',
+              accentColor: ticket.ticketType?.accentColor,
+            },
+          ]
+        : undefined,
     });
 
     const sent = await sendEmail({
@@ -195,7 +203,6 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
   }
 };
 
-// ── POST /emails/test  — Test email sending (dev only) ─────────────────────
 export const testEmail = async (req: Request, res: Response) => {
   try {
     if (process.env.NODE_ENV === 'production') {
@@ -208,25 +215,74 @@ export const testEmail = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Valid email address is required.' });
     }
 
-    const sent = await sendEmail({
-      to: email,
-      subject: 'PartyStorm Email Test 📧',
-      html: `
-        <div style="font-family: sans-serif; padding: 20px; background: #f5f5f5; border-radius: 8px;">
-          <h2>Email Test Successful!</h2>
-          <p>If you received this, PartyStorm email service is working correctly.</p>
-          <p>Sent at: ${new Date().toISOString()}</p>
-        </div>
+    const html = emailLayout({
+      eyebrow: 'Email test',
+      preheader: 'PartyStorm email service test',
+      bodyHtml: `
+        <p style="margin:0 0 12px 0;"><strong>Email test successful.</strong></p>
+        <p style="margin:0;color:#52525b;">If you received this, PartyStorm mail is working. Sent at ${new Date().toISOString()}.</p>
       `,
     });
 
+    const sent = await sendEmail({
+      to: email,
+      subject: 'PartyStorm Email Test',
+      html,
+      text: `PartyStorm email test at ${new Date().toISOString()}`,
+    });
+
     if (!sent) {
-      return res.status(500).json({ message: 'Failed to send test email.' });
+      return res.status(500).json({
+        message:
+          'Failed to send. Set RESEND_API_KEY (recommended) or EMAIL_USER + EMAIL_PASS.',
+      });
     }
 
     return res.status(200).json({ message: 'Test email sent successfully.' });
   } catch (error: any) {
     console.error('[Email] testEmail error:', error);
+    return res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+/**
+ * GET /emails/preview — list templates
+ * GET /emails/preview/:id — HTML preview (open in browser)
+ * Dev: open. Production: ADMIN only.
+ */
+export const listEmailPreviews = async (_req: Request, res: Response) => {
+  return res.json({
+    templates: EMAIL_PREVIEW_IDS,
+    hint: 'Open /api/emails/preview/{id} in a browser to view HTML.',
+  });
+};
+
+export const previewEmail = async (req: AuthRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || '') as EmailPreviewId;
+    if (!EMAIL_PREVIEW_IDS.includes(id)) {
+      return res.status(404).json({
+        message: `Unknown template. Use one of: ${EMAIL_PREVIEW_IDS.join(', ')}`,
+      });
+    }
+
+    const isDev = process.env.NODE_ENV !== 'production';
+    if (!isDev && req.role !== 'ADMIN') {
+      return res.status(403).json({ message: 'Admin only in production.' });
+    }
+
+    const tpl = getEmailPreview(id);
+    const format = String(req.query.format || 'html');
+
+    if (format === 'json') {
+      return res.json({ id, subject: tpl.subject, text: tpl.text, html: tpl.html });
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(tpl.html);
+  } catch (error: any) {
+    console.error('[Email] previewEmail error:', error);
     return res.status(500).json({ message: 'Server error.' });
   }
 };

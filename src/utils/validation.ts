@@ -23,12 +23,55 @@ export const isValidUrl = (url: string): boolean => {
 };
 
 /**
- * Validate phone number (basic format)
+ * Strip formatting from a phone string, keeping digits and a leading +.
+ */
+export const stripPhone = (phone: string): string => {
+  if (!phone) return '';
+  const trimmed = phone.trim();
+  const hasPlus = trimmed.startsWith('+');
+  const digits = trimmed.replace(/\D/g, '');
+  return hasPlus ? `+${digits}` : digits;
+};
+
+/**
+ * Normalize phone to E.164-ish for Nigeria: +234XXXXXXXXXX
+ * Accepts 0803..., 803..., 234803..., +234803...
+ */
+export const normalizePhone = (phone: string): string | null => {
+  if (!phone || typeof phone !== 'string') return null;
+  const raw = stripPhone(phone);
+  if (!raw) return null;
+
+  let digits = raw.startsWith('+') ? raw.slice(1) : raw;
+
+  if (digits.startsWith('234') && digits.length === 13) {
+    return `+${digits}`;
+  }
+  if (digits.startsWith('0') && digits.length === 11) {
+    return `+234${digits.slice(1)}`;
+  }
+  if (digits.length === 10 && /^[789]/.test(digits)) {
+    return `+234${digits}`;
+  }
+  // Already E.164-ish international (7–15 digits after country handling)
+  if (raw.startsWith('+') && digits.length >= 10 && digits.length <= 15) {
+    return `+${digits}`;
+  }
+  return null;
+};
+
+/**
+ * Validate phone number — prefers Nigerian mobile formats, allows general E.164.
  */
 export const isValidPhone = (phone: string): boolean => {
-  // Allow +1234567890 or 1234567890 format, 7-15 digits
-  const phoneRegex = /^\+?[\d\s\-()]{7,15}$/;
-  return phoneRegex.test(phone);
+  return normalizePhone(phone) !== null;
+};
+
+/**
+ * True if the string looks like an email rather than a phone identifier.
+ */
+export const looksLikeEmail = (value: string): boolean => {
+  return typeof value === 'string' && value.includes('@');
 };
 
 /**

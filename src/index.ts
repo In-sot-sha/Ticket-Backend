@@ -18,8 +18,8 @@ const app = express();
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
   : process.env.NODE_ENV === 'production'
-    ? ['https://partystorm.vercel.app']
-    : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000', 'https://partystorm.vercel.app'];
+    ? ['https://partystorm.vercel.app', 'https://api.partystorm.ng', 'https://partystorm.ng', 'https://www.partystorm.ng']
+    : ['http://localhost:5173', 'http://localhost:5181', 'http://localhost:3000', 'https://partystorm.vercel.app', 'https://www.partystorm.ng'];
 
 app.use(
   cors({
@@ -50,7 +50,17 @@ app.use(compression({
 }));
 
 // ── Body parsers ──────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '10mb' }));
+// Capture raw body for Paystack webhook signature verification
+app.use(
+  express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => {
+      if (req.url?.includes('/payments/paystack/webhook')) {
+        (req as any).rawBody = buf;
+      }
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ── Local uploads (dev only — Cloudinary is used in production) ──────────────

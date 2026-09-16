@@ -1,15 +1,31 @@
 import { Router } from 'express';
 import { createOpayCashier, opayWebhook, verifyOpayPayment } from '../controllers/payment';
+import {
+  confirmPaystackCheckout,
+  initializePaystackCheckout,
+  paystackWebhook,
+} from '../controllers/paystackPayment';
+import { verifyToken } from '../middleware/auth';
 
 const router = Router();
 
-// OPay cashier checkout — initiates a session and returns a cashierUrl
+// Paystack — vendor kind requires auth
+router.post(
+  '/paystack/initialize',
+  (req, res, next) => {
+    if (String(req.body?.kind || '').toUpperCase() === 'VENDOR') {
+      return verifyToken(req, res, next);
+    }
+    return next();
+  },
+  initializePaystackCheckout,
+);
+router.post('/paystack/confirm', confirmPaystackCheckout);
+router.post('/paystack/webhook', paystackWebhook);
+
+// OPay
 router.post('/opay/create', createOpayCashier);
-
-// OPay webhook — receives async payment notifications from OPay servers
 router.post('/opay/webhook', opayWebhook);
-
-// OPay status query — verifies a payment after return from cashier
 router.post('/opay/verify', verifyOpayPayment);
 
 export default router;

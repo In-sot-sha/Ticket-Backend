@@ -9,6 +9,12 @@ import {
   getOrganizerEventById,
   getOrganizerAnalytics,
 } from '../controllers/event';
+import {
+  requestEventPromotion,
+  sendAttendeeBlast,
+  getAttendeeBlastPreview,
+  triggerEventLifecycleEmail,
+} from '../controllers/organizerMarketing';
 import { verifyToken } from '../middleware/auth';
 import { upload } from '../utils/upload';
 
@@ -18,20 +24,20 @@ const router = Router();
 router.get('/', getEvents);
 
 // Unified event lookup — works with slug OR numeric ID
-// e.g. /events/get/afro-fusion-festival-abuja  or  /events/get/42
 router.get('/get/:identifier', getEvent);
-
-// Legacy aliases so existing clients & bookmarks keep working
-router.get('/get-event/:identifier', getEvent);  // old ID-based route
-router.get('/slug/:identifier', getEvent);         // old slug-based route
+router.get('/get-event/:identifier', getEvent);
+router.get('/slug/:identifier', getEvent);
 
 // Protected routes
 router.get('/organizer/analytics', verifyToken, getOrganizerAnalytics);
 router.get('/organizer', verifyToken, getOrganizerEvents);
 router.get('/organizer/:id', verifyToken, getOrganizerEventById);
-router.post('/', verifyToken,  upload.single('image'), createEvent);
+router.get('/:id/attendee-blast-preview', verifyToken, getAttendeeBlastPreview);
+router.post('/:id/attendee-blast', verifyToken, sendAttendeeBlast);
+router.post('/:id/trigger-lifecycle-email', verifyToken, triggerEventLifecycleEmail);
+router.post('/:id/request-promotion', verifyToken, requestEventPromotion);
+router.post('/', verifyToken, upload.single('image'), createEvent);
 router.get('/:identifier', getEvent);
-// router.post('/vendor', verifyToken,  upload.single('image'), createEvent);
 router.put('/update/:id', verifyToken, upload.single('image'), updateEvent);
 router.put('/:id', verifyToken, upload.single('image'), updateEvent);
 router.delete('/delete/:id', verifyToken, deleteEvent);

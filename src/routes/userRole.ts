@@ -6,17 +6,20 @@ import {
   getOrganizerProfile,
   updateOrganizerProfile,
   getVendorApplications,
-  getMyVendorApplications
+  getMyVendorApplications,
+  getBanks,
 } from '../controllers/userRole';
 import { verifyToken } from '../middleware/auth';
 import { upload } from '../utils/upload';
 
 const router = Router();
 
-// Role transition endpoints
+// Role transition & helper endpoints
 router.post('/become-organizer', verifyToken, becomeOrganizer);
 router.post('/upload-logo', verifyToken, upload.single('logo'), uploadOrgLogo);
 router.post('/become-vendor', verifyToken, becomeVendor);
+router.get('/banks', verifyToken, getBanks);
+
 
 // Organizer profile endpoints
 router.get('/organizer-profile', verifyToken, getOrganizerProfile);
