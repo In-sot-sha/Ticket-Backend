@@ -22,6 +22,13 @@ import {
 } from '../controllers/admin';
 import { resolvePaystackPayment } from '../controllers/paystackPayment';
 import {
+  getWhatsAppAdminConfig,
+  getWhatsAppMessages,
+  putWhatsAppAdminConfig,
+  retryWhatsAppMessage,
+  testWhatsAppAdminConnection,
+} from '../controllers/whatsapp';
+import {
   listStaff,
   createStaff,
   resendStaffInvite,
@@ -57,6 +64,11 @@ router.get('/support/tickets', getSupportTickets);
 router.get('/support/tickets/:id', getSupportTicketById);
 router.post('/support/tickets/:id/replies', replyToSupportTicket);
 router.put('/support/tickets/:id', updateSupportTicket);
+router.get('/whatsapp', getWhatsAppAdminConfig);
+router.put('/whatsapp', putWhatsAppAdminConfig);
+router.get('/whatsapp/messages', getWhatsAppMessages);
+router.post('/whatsapp/messages/:id/retry', retryWhatsAppMessage);
+router.post('/whatsapp/test', testWhatsAppAdminConnection);
 router.get('/events', getAdminEvents);
 router.put('/events/:id/promote', promoteEvent);
 router.post('/events/:id/transfer', transferEvent);

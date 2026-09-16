@@ -4,6 +4,7 @@ import { AuthRequest } from '../middleware/auth';
 import { isValidEmail, isValidName, isValidPhone, normalizePhone, sanitizeString } from '../utils/validation';
 import { createOTP, verifyOTP, consumeOTP, cleanupExpiredOTPs } from '../services/otp';
 import { sendEmail, generateOTPEmail } from '../services/email';
+import { deliverTicketsViaWhatsApp, sendWhatsAppOtp } from '../services/whatsapp';
 import {
   assertMaxPerPerson,
   getMaxPerPerson,
@@ -306,6 +307,27 @@ export const purchaseTicket = async (req: AuthRequest, res: Response) => {
       console.error('Failed to send purchase ticket email:', err);
     }
 
+    try {
+      if (req.userId) {
+        const buyer = await prisma.user.findUnique({ where: { id: req.userId } });
+        if (buyer?.phone) {
+          await deliverTicketsViaWhatsApp({
+            phone: buyer.phone,
+            eventTitle: event.title,
+            eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
+            eventLocation: event.location || 'TBA',
+            tickets: tickets.map((t) => ({
+              id: t.id,
+              qrCode: t.qrCode,
+              ticketTypeName: t.ticketType?.name || ticketType.name,
+            })),
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[WhatsApp] Purchase ticket delivery failed:', err);
+    }
+
     res.status(201).json({ tickets });
   } catch (error) {
     console.error('Error purchasing ticket:', error);
@@ -497,9 +519,17 @@ export const requestTicketRecovery = async (req: AuthRequest, res: Response) => 
       return;
     }
 
-    // Find user by email or phone
+    const normalizedPhone = method === 'phone' ? normalizePhone(String(contact)) : null;
     const user = await prisma.user.findFirst({
-      where: method === 'phone' ? { phone: contact } : { email: contact },
+      where:
+        method === 'phone'
+          ? {
+              OR: [
+                { phone: String(contact).trim() },
+                ...(normalizedPhone ? [{ phone: normalizedPhone }] : []),
+              ],
+            }
+          : { email: contact },
     });
 
     if (!user) {
@@ -507,14 +537,28 @@ export const requestTicketRecovery = async (req: AuthRequest, res: Response) => 
       return;
     }
 
-    // Create OTP in database
-    const { code, expiresIn } = await createOTP(contact);
-
     if (method === 'phone') {
-      // Simulate SMS or reject if SMS isn't configured
-      res.status(400).json({ message: 'Phone recovery is not supported yet. Please use email.' });
+      const typed = String(contact).trim();
+      const phone = normalizePhone(typed) || (user.phone ? normalizePhone(user.phone) : null);
+      if (!phone) {
+        res.status(400).json({ message: 'Enter a valid phone number.' });
+        return;
+      }
+      const { code } = await createOTP(typed);
+      try {
+        await sendWhatsAppOtp(phone, code);
+      } catch (err: any) {
+        res.status(503).json({
+          message: err?.message || 'WhatsApp delivery is unavailable. Use email recovery.',
+        });
+        return;
+      }
+      res.json({ message: 'Verification code sent on WhatsApp', contact: typed });
       return;
     }
+
+    // Create OTP in database
+    const { code, expiresIn } = await createOTP(contact);
 
     // Send OTP email
     const emailTemplate = generateOTPEmail(contact, code, expiresIn);
@@ -566,14 +610,15 @@ export const verifyTicketRecovery = async (req: AuthRequest, res: Response) => {
     // Consume the OTP (now async)
     await consumeOTP(contact);
 
-    // Find user by email or phone
+    const normalizedPhone = normalizePhone(String(contact));
     const user = await prisma.user.findFirst({
       where: {
         OR: [
           { email: contact },
-          { phone: contact }
-        ]
-      }
+          { phone: contact },
+          ...(normalizedPhone ? [{ phone: normalizedPhone }] : []),
+        ],
+      },
     });
 
     if (!user) {
@@ -964,6 +1009,16 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
             console.error('Failed to send individual manual ticket email:', err);
           }
         }
+        const notifyPhone = att.phone?.trim() || guestUser.phone;
+        if (notifyPhone) {
+          await deliverTicketsViaWhatsApp({
+            phone: notifyPhone,
+            eventTitle: event.title,
+            eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
+            eventLocation: event.location || 'TBA',
+            tickets: [{ id: ticket.id, qrCode: ticket.qrCode, ticketTypeName: ticketType.name }],
+          }).catch((err) => console.error('[WhatsApp] Manual ticket delivery failed:', err));
+        }
       }
     } else {
       try {
@@ -1037,6 +1092,20 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
         } catch (err) {
           console.error('Failed to send manual ticket email:', err);
         }
+      }
+      const notifyPhone = buyerPhone?.trim() || guestUser.phone;
+      if (tickets.length > 0 && notifyPhone) {
+        await deliverTicketsViaWhatsApp({
+          phone: notifyPhone,
+          eventTitle: event.title,
+          eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
+          eventLocation: event.location || 'TBA',
+          tickets: tickets.map((t) => ({
+            id: t.id,
+            qrCode: t.qrCode,
+            ticketTypeName: t.ticketType?.name || ticketType.name,
+          })),
+        }).catch((err) => console.error('[WhatsApp] Manual ticket delivery failed:', err));
       }
     }
 

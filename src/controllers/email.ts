@@ -196,6 +196,21 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       return res.status(500).json({ message: 'Failed to send confirmation email.' });
     }
 
+    if (ticket.user.phone && ticket.qrCode) {
+      const { deliverTicketsViaWhatsApp } = await import('../services/whatsapp');
+      await deliverTicketsViaWhatsApp({
+        phone: ticket.user.phone,
+        eventTitle: ticket.event.title,
+        eventDate,
+        eventLocation: ticket.event.location || 'Online',
+        tickets: [{
+          id: ticket.id,
+          qrCode: ticket.qrCode,
+          ticketTypeName: ticket.ticketType?.name || 'General Admission',
+        }],
+      }).catch((err) => console.error('[WhatsApp] Resend delivery failed:', err));
+    }
+
     return res.status(200).json({ message: 'Ticket confirmation email sent.' });
   } catch (error: any) {
     console.error('[Email] sendTicketConfirmation error:', error);

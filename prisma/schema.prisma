@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -559,5 +559,55 @@ model StaffProjectAssignment {
 
   @@unique([projectId, userId])
   @@index([userId])
+}
+
+enum WhatsAppMessageKind {
+  TICKET
+  OTP
+}
+
+enum WhatsAppMessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+/** Non-secret WhatsApp delivery settings. Tokens stay in environment variables. */
+model WhatsAppConfig {
+  id               Int      @id @default(1)
+  enabled          Boolean  @default(false)
+  sendTickets      Boolean  @default(true)
+  sendOtp          Boolean  @default(true)
+  ticketTemplate   String   @default("partystorm_ticket_confirm")
+  otpTemplate      String   @default("partystorm_otp")
+  templateLanguage String   @default("en")
+  currency         String   @default("NGN")
+  ticketPrice      Float    @default(10)
+  otpPrice         Float    @default(10)
+  updatedAt        DateTime @updatedAt
+}
+
+/** Delivery log. Credentials stay in environment variables. */
+model WhatsAppMessage {
+  id           Int                   @id @default(autoincrement())
+  kind         WhatsAppMessageKind
+  toPhone      String
+  templateName String
+  status       WhatsAppMessageStatus @default(QUEUED)
+  wamid        String?               @unique
+  orderId      Int?
+  ticketId     Int?
+  attempts     Int                   @default(0)
+  price        Float                 @default(0)
+  currency     String                @default("NGN")
+  lastError    String?               @db.Text
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@index([status, createdAt])
+  @@index([orderId])
+  @@index([ticketId])
 }
 
