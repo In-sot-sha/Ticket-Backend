@@ -13,6 +13,30 @@ import {
 } from '../services/guestUser';
 import { calculateUnitOrderFees } from '../constants/fees';
 import { assertTicketSalesOpen } from '../services/ticketSales';
+import { writeAuditLog } from '../services/auditLog';
+import { authorizeEventOps } from '../services/eventAccess';
+
+const PAID_GATE_METHODS = ['CASH', 'POS', 'TRANSFER'] as const;
+type PaidGateMethod = (typeof PAID_GATE_METHODS)[number];
+
+const ticketSafeUser = {
+  select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+} as const;
+
+const ticketSafeSoldBy = {
+  select: { id: true, firstName: true, lastName: true, isStaff: true },
+} as const;
+
+function resolveGatePayment(price: number, raw?: string): { paymentMethod: 'CASH' | 'POS' | 'TRANSFER' | 'FREE'; amountPaid: number } {
+  if (Number(price) <= 0) {
+    return { paymentMethod: 'FREE', amountPaid: 0 };
+  }
+  const method = String(raw || '').toUpperCase();
+  if (!PAID_GATE_METHODS.includes(method as PaidGateMethod)) {
+    throw Object.assign(new Error('Select cash, POS, or transfer for paid tickets.'), { status: 400 });
+  }
+  return { paymentMethod: method as PaidGateMethod, amountPaid: Number(price) };
+}
 
 /**
  * Get all tickets for the authenticated user or for an event (by eventId param)
@@ -29,35 +53,32 @@ export const getEventAttendanceTickets = async (req: AuthRequest, res: Response)
       return;
     }
 
-    const event = await prisma.event.findUnique({
-      where: { id: eventIdNum },
-      include: { organization: { include: { members: true } } }
-    });
-
-    if (!event) {
-      res.status(404).json({ message: 'Event not found' });
+    if (!req.userId) {
+      res.status(401).json({ message: 'Authentication required' });
       return;
     }
 
-    // Check if user is organizer or member of the organization
-    const isOrganizer = event.organization?.members.some(m => m.userId === req.userId) ?? false;
-    const isEventOwner = event.organization?.ownerId === req.userId;
-
-    if (!isOrganizer && !isEventOwner && req.role !== 'ADMIN') {
-      res.status(403).json({ message: 'Not authorized to view this event\'s attendance' });
+    try {
+      await authorizeEventOps(req.userId, req.role, eventIdNum, [
+        'SCAN',
+        'WALK_IN_SALE',
+        'CHECK_IN',
+        'GATE_MANAGE',
+      ]);
+    } catch (authErr: any) {
+      res.status(authErr.status || 403).json({ message: authErr.message || 'Not authorized' });
       return;
     }
 
-    // Return all valid and checked-in tickets for the event
     const tickets = await prisma.ticket.findMany({
       where: {
         eventId: eventIdNum,
         status: { in: ['VALID', 'USED'] }
       },
       include: {
-        event: true,
-        user: true,
-        ticketType: true,
+        user: ticketSafeUser,
+        ticketType: { select: { id: true, name: true, price: true } },
+        soldBy: ticketSafeSoldBy,
       },
       orderBy: { updatedAt: 'desc' }
     });
@@ -474,6 +495,21 @@ export const validateTicket = async (req: AuthRequest, res: Response) => {
       }
     });
 
+    await writeAuditLog({
+      action: 'CHECK_IN',
+      entity: 'Ticket',
+      entityId: updatedTicket.id,
+      eventId: updatedTicket.eventId,
+      userId: req.userId ?? null,
+      metadata: {
+        qrCode: updatedTicket.qrCode,
+        ticketType: updatedTicket.ticketType?.name,
+        attendee: updatedTicket.user
+          ? `${updatedTicket.user.firstName} ${updatedTicket.user.lastName}`.trim()
+          : null,
+      },
+    });
+
     res.status(200).json({
       valid: true,
       message: 'Ticket validated — entry approved',
@@ -811,32 +847,14 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Verify the event exists and the requester is the organizer
-    const event = await prisma.event.findUnique({
-      where: { id: Number(eventId) },
-      include: { organization: { include: { members: true } } },
-    });
-
-    if (!event) {
-      res.status(404).json({ message: 'Event not found' });
+    let event;
+    try {
+      ({ event } = await authorizeEventOps(req.userId, req.role, Number(eventId), 'WALK_IN_SALE'));
+    } catch (authErr: any) {
+      res.status(authErr.status || 403).json({
+        message: authErr.status === 404 ? 'Event not found' : 'Not authorized to add attendees to this event',
+      });
       return;
-    }
-
-    const isMember = event.organization?.members.some((m) => m.userId === req.userId);
-    // Staff access checked later via resolveStaffAccess when available; ADMIN always allowed
-    if (!isMember && req.role !== 'ADMIN') {
-      // Dynamically import staff resolver to avoid circular deps if module missing during partial deploy
-      try {
-        const { resolveStaffAccess } = await import('../services/staffAccess');
-        const access = await resolveStaffAccess(req.userId!, Number(eventId));
-        if (!access.allowed || !access.capabilities.includes('WALK_IN_SALE')) {
-          res.status(403).json({ message: 'Not authorized to add attendees to this event' });
-          return;
-        }
-      } catch {
-        res.status(403).json({ message: 'Not authorized to add attendees to this event' });
-        return;
-      }
     }
 
     // Get the ticket type
@@ -856,8 +874,15 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
     }
 
     const qty = attendees && attendees.length > 0 ? attendees.length : Math.min(Math.max(1, Number(quantity)), 20);
-    const tickets = [];
-    const totalAmount = ticketType.price * qty;
+    const tickets: any[] = [];
+    let payment;
+    try {
+      payment = resolveGatePayment(ticketType.price, paymentMethod);
+    } catch (payErr: any) {
+      res.status(400).json({ message: payErr.message });
+      return;
+    }
+    const totalAmount = payment.amountPaid * qty;
     const maxPerPerson = getMaxPerPerson(ticketType);
 
     const resolveGuest = async (name: string, email?: string, phone?: string) => {
@@ -925,8 +950,11 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
             qrCode: `MANUAL-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
             purchaseType: 'GATE',
             status: checkInNow ? 'USED' : 'VALID',
+            paymentMethod: payment.paymentMethod,
+            amountPaid: payment.amountPaid,
+            soldByUserId: req.userId,
           },
-          include: { event: true, ticketType: true }
+          include: { event: true, ticketType: true, user: ticketSafeUser, soldBy: ticketSafeSoldBy }
         });
         tickets.push(ticket);
         
@@ -999,8 +1027,11 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
             qrCode: `MANUAL-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
             purchaseType: 'GATE',
             status: checkInNow ? 'USED' : 'VALID',
+            paymentMethod: payment.paymentMethod,
+            amountPaid: payment.amountPaid,
+            soldByUserId: req.userId,
           },
-          include: { event: true, ticketType: true }
+          include: { event: true, ticketType: true, user: ticketSafeUser, soldBy: ticketSafeSoldBy }
         });
         tickets.push(ticket);
       }
@@ -1040,10 +1071,37 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    await writeAuditLog({
+      action: 'GATE_SALE',
+      entity: 'Ticket',
+      entityId: tickets.map((t) => t.id).join(','),
+      eventId: event.id,
+      userId: req.userId,
+      metadata: {
+        quantity: qty,
+        ticketTypeId: ticketType.id,
+        ticketTypeName: ticketType.name,
+        paymentMethod: payment.paymentMethod,
+        amountPaid: totalAmount,
+        unitPrice: payment.amountPaid,
+        checkInNow: Boolean(checkInNow),
+        guests: (attendees && attendees.length > 0
+          ? attendees
+          : [{ name: buyerName, email: buyerEmail, phone: buyerPhone }]
+        ).map((g: any) => ({
+          name: g?.name,
+          email: g?.email,
+          phone: g?.phone,
+        })),
+      },
+    });
+
     res.status(201).json({
       message: `${qty} ticket(s) registered successfully`,
       tickets,
       checkedIn: checkInNow,
+      paymentMethod: payment.paymentMethod,
+      amountPaid: totalAmount,
     });
   } catch (error: any) {
     console.error('Error creating manual ticket:', error);
@@ -1052,6 +1110,138 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
       return;
     }
     res.status(500).json({ message: 'Error registering attendee' });
+  }
+};
+
+/**
+ * Fast lookup of an existing attendee by phone/email so gate staff can add another day without retyping.
+ */
+export const lookupEventAttendee = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
+    }
+
+    const eventIdNum = Number(req.params.eventId);
+    const q = String(req.query.q || '').trim();
+    if (!eventIdNum) {
+      res.status(400).json({ message: 'Invalid Event ID' });
+      return;
+    }
+    if (q.length < 3) {
+      res.status(200).json({ matches: [] });
+      return;
+    }
+
+    try {
+      await authorizeEventOps(req.userId, req.role, eventIdNum, 'WALK_IN_SALE');
+    } catch (authErr: any) {
+      res.status(authErr.status || 403).json({ message: authErr.message || 'Not authorized' });
+      return;
+    }
+
+    const phone = normalizePhone(q);
+    const email = q.includes('@') && isValidEmail(q) ? q.toLowerCase() : null;
+    const digits = q.replace(/\D/g, '');
+
+    const or: Array<Record<string, unknown>> = [];
+    if (email) or.push({ email });
+    if (phone) or.push({ phone });
+    if (!email && !phone && digits.length >= 7) {
+      or.push({ phone: { contains: digits.slice(-10) } });
+    }
+
+    if (or.length === 0) {
+      res.status(200).json({ matches: [] });
+      return;
+    }
+
+    const users = await prisma.user.findMany({
+      where: { OR: or as any },
+      take: 6,
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+    });
+
+    const matches = await Promise.all(
+      users.map(async (user) => {
+        const tickets = await prisma.ticket.findMany({
+          where: {
+            eventId: eventIdNum,
+            userId: user.id,
+            status: { in: ['VALID', 'USED'] },
+          },
+          include: { ticketType: { select: { id: true, name: true, price: true } } },
+        });
+        const byType = new Map<string, { ticketTypeId: number; ticketTypeName: string; qty: number }>();
+        for (const t of tickets) {
+          const key = String(t.ticketTypeId);
+          const existing = byType.get(key);
+          if (existing) existing.qty += 1;
+          else {
+            byType.set(key, {
+              ticketTypeId: t.ticketTypeId,
+              ticketTypeName: t.ticketType?.name || 'Ticket',
+              qty: 1,
+            });
+          }
+        }
+        return {
+          userId: user.id,
+          name: `${user.firstName} ${user.lastName}`.replace(/\s+Guest$/, '').trim() || user.firstName,
+          email: user.email || '',
+          phone: user.phone || '',
+          existingTickets: Array.from(byType.values()),
+        };
+      })
+    );
+
+    res.status(200).json({ matches });
+  } catch (error) {
+    console.error('Error looking up attendee:', error);
+    res.status(500).json({ message: 'Error looking up attendee' });
+  }
+};
+
+export const getEventAuditLogs = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
+    }
+
+    const eventIdNum = Number(req.params.eventId);
+    if (!eventIdNum) {
+      res.status(400).json({ message: 'Invalid Event ID' });
+      return;
+    }
+
+    try {
+      await authorizeEventOps(req.userId, req.role, eventIdNum, [
+        'SCAN',
+        'WALK_IN_SALE',
+        'CHECK_IN',
+        'GATE_MANAGE',
+      ]);
+    } catch (authErr: any) {
+      res.status(authErr.status || 403).json({ message: authErr.message || 'Not authorized' });
+      return;
+    }
+
+    const take = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const logs = await prisma.auditLog.findMany({
+      where: { eventId: eventIdNum },
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, isStaff: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take,
+    });
+
+    res.status(200).json(logs);
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
+    res.status(500).json({ message: 'Error fetching audit logs' });
   }
 };
 
@@ -1069,4 +1259,6 @@ export default {
   checkoutGuest,
   checkTicketEligibility,
   manualTicket,
+  lookupEventAttendee,
+  getEventAuditLogs,
 };

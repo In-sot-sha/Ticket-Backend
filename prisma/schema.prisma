@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -46,6 +46,13 @@ enum PaymentStatus {
   PENDING
   PAID
   REFUNDED
+}
+
+enum GatePaymentMethod {
+  CASH
+  POS
+  TRANSFER
+  FREE
 }
 
 enum SupportTicketStatus {
@@ -98,6 +105,8 @@ model User {
   staffProfile           StaffProfile?
   staffOrgCoverages      StaffOrgCoverage[]
   staffProjectAssignments StaffProjectAssignment[]
+  ticketsSold            Ticket[]                 @relation("TicketsSold")
+  auditLogs              AuditLog[]
 }
 
 model Organization {
@@ -229,6 +238,7 @@ model Event {
   tickets      Ticket[]
   orders       Order[]
   opsProjects  OpsProject[]
+  auditLogs    AuditLog[]
 
   @@index([isPublished, startDate])
   @@index([category])
@@ -372,22 +382,48 @@ model TicketType {
 }
 
 model Ticket {
-  id           Int          @id @default(autoincrement())
-  eventId      Int
-  userId       Int?
-  ticketTypeId Int // Foreign key to TicketType
-  qrCode       String // Unique QR code for the ticket
-  status       TicketStatus @default(VALID)
-  purchaseType PurchaseType @default(ONLINE)
-  orderId      Int? // Optional link to the order transaction
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  id            Int                @id @default(autoincrement())
+  eventId       Int
+  userId        Int?
+  ticketTypeId  Int // Foreign key to TicketType
+  qrCode        String // Unique QR code for the ticket
+  status        TicketStatus       @default(VALID)
+  purchaseType  PurchaseType       @default(ONLINE)
+  orderId       Int? // Optional link to the order transaction
+  paymentMethod GatePaymentMethod?
+  amountPaid    Float              @default(0)
+  soldByUserId  Int?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
 
   // Relations
   event      Event      @relation(fields: [eventId], references: [id])
   user       User?      @relation(fields: [userId], references: [id])
   ticketType TicketType @relation(fields: [ticketTypeId], references: [id])
   order      Order?     @relation(fields: [orderId], references: [id])
+  soldBy     User?      @relation("TicketsSold", fields: [soldByUserId], references: [id])
+
+  @@index([eventId, soldByUserId])
+  @@index([eventId, paymentMethod])
+}
+
+// Who did what at the gate — sales, check-ins, and other money-sensitive actions
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  action    String
+  entity    String
+  entityId  String?
+  eventId   Int?
+  userId    Int?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  event Event? @relation(fields: [eventId], references: [id])
+  user  User?  @relation(fields: [userId], references: [id])
+
+  @@index([eventId, createdAt])
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
 }
 
 // Model for different vendor types within an event
