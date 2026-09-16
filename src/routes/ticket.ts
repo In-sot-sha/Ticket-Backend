@@ -14,6 +14,7 @@ import {
   manualTicket,
   lookupEventAttendee,
   getEventAuditLogs,
+  getAdminAuditLogs,
 } from '../controllers/ticket';
 import { verifyToken, optionalVerifyToken, requireRole } from '../middleware/auth';
 import { otpRequestRateLimit } from '../middleware/rateLimit';
@@ -28,8 +29,9 @@ router.post('/validate', optionalVerifyToken, validateTicket); // For gate scann
 // Ticket queries with distinct routes
 router.get('/my-tickets', verifyToken, getMyTickets); // Logged-in user's own tickets
 router.get('/admin/all', verifyToken, requireRole('ADMIN'), getAdminTickets); // Platform owners/admins view all tickets
+router.get('/admin/audit', verifyToken, requireRole('ADMIN'), getAdminAuditLogs);
 router.get('/event/:eventId/lookup', verifyToken, lookupEventAttendee);
-router.get('/event/:eventId/audit', verifyToken, getEventAuditLogs);
+router.get('/event/:eventId/audit', verifyToken, requireRole('ADMIN'), getEventAuditLogs);
 router.get('/event/:eventId', verifyToken, getEventAttendanceTickets); // Organizer event attendance tickets
 router.get('/:id', verifyToken, getTicketById);
 

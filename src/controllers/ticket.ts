@@ -83,6 +83,15 @@ export const getEventAttendanceTickets = async (req: AuthRequest, res: Response)
       orderBy: { updatedAt: 'desc' }
     });
 
+    if (req.role !== 'ADMIN') {
+      const publicTickets = tickets.map((ticket) => {
+        const { paymentMethod: _p, amountPaid: _a, soldByUserId: _s, soldBy: _sb, ...rest } = ticket as any;
+        return rest;
+      });
+      res.status(200).json(publicTickets);
+      return;
+    }
+
     res.status(200).json(tickets);
     return;
   } catch (error) {
@@ -103,9 +112,10 @@ export const getAdminTickets = async (req: AuthRequest, res: Response) => {
 
     const tickets = await prisma.ticket.findMany({
       include: {
-        event: true,
-        user: true,
-        ticketType: true,
+        event: { select: { id: true, title: true } },
+        user: ticketSafeUser,
+        ticketType: { select: { id: true, name: true, price: true } },
+        soldBy: ticketSafeSoldBy,
       },
       orderBy: { createdAt: 'desc' }
     });
@@ -1209,22 +1219,14 @@ export const getEventAuditLogs = async (req: AuthRequest, res: Response) => {
       res.status(401).json({ message: 'Authentication required' });
       return;
     }
+    if (req.role !== 'ADMIN') {
+      res.status(403).json({ message: 'Forbidden: Admin access only' });
+      return;
+    }
 
     const eventIdNum = Number(req.params.eventId);
     if (!eventIdNum) {
       res.status(400).json({ message: 'Invalid Event ID' });
-      return;
-    }
-
-    try {
-      await authorizeEventOps(req.userId, req.role, eventIdNum, [
-        'SCAN',
-        'WALK_IN_SALE',
-        'CHECK_IN',
-        'GATE_MANAGE',
-      ]);
-    } catch (authErr: any) {
-      res.status(authErr.status || 403).json({ message: authErr.message || 'Not authorized' });
       return;
     }
 
@@ -1233,6 +1235,7 @@ export const getEventAuditLogs = async (req: AuthRequest, res: Response) => {
       where: { eventId: eventIdNum },
       include: {
         user: { select: { id: true, firstName: true, lastName: true, isStaff: true } },
+        event: { select: { id: true, title: true } },
       },
       orderBy: { createdAt: 'desc' },
       take,
@@ -1241,6 +1244,32 @@ export const getEventAuditLogs = async (req: AuthRequest, res: Response) => {
     res.status(200).json(logs);
   } catch (error) {
     console.error('Error fetching audit logs:', error);
+    res.status(500).json({ message: 'Error fetching audit logs' });
+  }
+};
+
+export const getAdminAuditLogs = async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.role !== 'ADMIN') {
+      res.status(403).json({ message: 'Forbidden: Admin access only' });
+      return;
+    }
+
+    const take = Math.min(Math.max(Number(req.query.limit) || 80, 1), 200);
+    const eventId = req.query.eventId ? Number(req.query.eventId) : undefined;
+    const logs = await prisma.auditLog.findMany({
+      where: eventId ? { eventId } : undefined,
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, isStaff: true } },
+        event: { select: { id: true, title: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take,
+    });
+
+    res.status(200).json(logs);
+  } catch (error) {
+    console.error('Error fetching admin audit logs:', error);
     res.status(500).json({ message: 'Error fetching audit logs' });
   }
 };
@@ -1261,4 +1290,5 @@ export default {
   manualTicket,
   lookupEventAttendee,
   getEventAuditLogs,
+  getAdminAuditLogs,
 };
