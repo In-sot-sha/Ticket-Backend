@@ -55,7 +55,10 @@ app.use(
   express.json({
     limit: '10mb',
     verify: (req, _res, buf) => {
-      if (req.url?.includes('/payments/paystack/webhook')) {
+      if (
+        req.url?.includes('/payments/paystack/webhook') ||
+        req.url?.includes('/whatsapp/webhook')
+      ) {
         (req as any).rawBody = buf;
       }
     },

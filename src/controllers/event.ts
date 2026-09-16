@@ -281,11 +281,11 @@ export const getEvents = async (req: Request, res: Response) => {
 
     const orderBy = date && organizationId
       ? { startDate: 'asc' as const }
-      : { createdAt: 'desc' as const };
+      : upcoming === 'true'
+        ? { startDate: 'asc' as const }
+        : { createdAt: 'desc' as const };
 
-    const events = await prisma.event.findMany({
-      where: whereClause,
-      include: {
+    const eventInclude = {
         organization: {
           select: {
             id: true,
@@ -317,11 +317,35 @@ export const getEvents = async (req: Request, res: Response) => {
             maxVendors: true
           }
         }
-      },
+    };
+
+    let events = await prisma.event.findMany({
+      where: whereClause,
+      include: eventInclude,
       skip,
       take: limitNum,
       orderBy,
     });
+
+    // Homepage (and other upcoming lists) otherwise miss older events that are still promoted.
+    if (upcoming === 'true' && pageNum === 1 && promoted !== 'true' && !search) {
+      const featured = await prisma.event.findMany({
+        where: {
+          isPublished: true,
+          isPromoted: true,
+          endDate: { gte: new Date() },
+          OR: [{ promotedUntil: null }, { promotedUntil: { gte: new Date() } }],
+          ...(category ? { category: String(category) } : {}),
+        },
+        include: eventInclude,
+        orderBy: { startDate: 'asc' },
+        take: 8,
+      });
+      if (featured.length) {
+        const featuredIds = new Set(featured.map((e) => e.id));
+        events = [...featured, ...events.filter((e) => !featuredIds.has(e.id))].slice(0, limitNum);
+      }
+    }
 
     const total = await prisma.event.count({ where: whereClause });
 

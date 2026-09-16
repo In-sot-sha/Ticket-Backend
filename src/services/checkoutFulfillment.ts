@@ -111,6 +111,21 @@ export async function fulfillTicketCheckout(input: {
       },
     });
     if (existing) {
+      const { deliverUnsentTicketsViaWhatsApp } = await import('./whatsapp');
+      void deliverUnsentTicketsViaWhatsApp({
+        phone: existing.user?.phone,
+        orderId: existing.id,
+        eventTitle: existing.tickets[0]?.event?.title || 'Event',
+        eventDate: existing.tickets[0]?.event?.startDate
+          ? new Date(existing.tickets[0].event.startDate).toLocaleDateString()
+          : 'TBA',
+        eventLocation: existing.tickets[0]?.event?.location || 'TBA',
+        tickets: existing.tickets.map((ticket) => ({
+          id: ticket.id,
+          qrCode: ticket.qrCode,
+          ticketTypeName: ticket.ticketType?.name,
+        })),
+      }).catch((err) => console.error('[WhatsApp] Retry delivery failed:', err));
       return { order: existing, tickets: existing.tickets, user: existing.user, reused: true };
     }
   }
@@ -212,6 +227,20 @@ export async function fulfillTicketCheckout(input: {
     totalPrice: fees.chargeAmount || fees.subtotal,
     quantity,
   });
+
+  const { deliverTicketsViaWhatsApp } = await import('./whatsapp');
+  void deliverTicketsViaWhatsApp({
+    phone: cleanPhone || guestUser.phone,
+    orderId: result.order.id,
+    eventTitle: event.title,
+    eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
+    eventLocation: event.location || 'TBA',
+    tickets: result.tickets.map((t) => ({
+      id: t.id,
+      qrCode: t.qrCode,
+      ticketTypeName: t.ticketType?.name || ticketType.name,
+    })),
+  }).catch((err) => console.error('[WhatsApp] Ticket delivery failed:', err));
 
   return { order: result.order, tickets: result.tickets, user: guestUser, reused: false };
 }
