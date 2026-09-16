@@ -98,6 +98,27 @@ function formatEventWithSettings(event: any) {
 
 type TicketTypeRow = { id: number; name: string; price: number; quantity: number | null };
 
+function isUnlimitedTicketQuantity(quantity: number | null | undefined) {
+  return quantity == null || quantity <= 0;
+}
+
+function availabilityFromTicketTypes(
+  ticketTypes: Array<{ quantity: number | null; isPaused?: boolean | null }>,
+  ticketsSold: number
+) {
+  const onSale = ticketTypes.filter((ticket) => !ticket.isPaused);
+  const pool = onSale.length > 0 ? onSale : ticketTypes;
+  const ticketsUnlimited = pool.some((ticket) => isUnlimitedTicketQuantity(ticket.quantity));
+  if (ticketsUnlimited) {
+    return { ticketsAvailable: null, ticketsUnlimited: true as const };
+  }
+  const inventory = pool.reduce((sum, ticket) => sum + (ticket.quantity ?? 0), 0);
+  return {
+    ticketsAvailable: Math.max(0, inventory - ticketsSold),
+    ticketsUnlimited: false as const,
+  };
+}
+
 function getEventPhase(isPublished: boolean, startDate: Date, endDate: Date): string {
   if (!isPublished) return 'draft';
   const now = new Date();
@@ -205,7 +226,7 @@ export const getEvents = async (req: Request, res: Response) => {
       isPublished: true // Only return published events
     };
 
-    const cacheKey = `events_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}_${dateFromQ || ''}_${dateToQ || ''}_${promoted || ''}_${organizationId || ''}_${upcoming || ''}`;
+    const cacheKey = `events_v2_${page}_${limit}_${search || ''}_${location || ''}_${category || ''}_${date || ''}_${dateFromQ || ''}_${dateToQ || ''}_${promoted || ''}_${organizationId || ''}_${upcoming || ''}`;
 
     const cachedData = await cacheGet(cacheKey);
     if (cachedData) {
@@ -275,14 +296,12 @@ export const getEvents = async (req: Request, res: Response) => {
       };
     }
 
-    if (upcoming === 'true') {
-      whereClause.endDate = { gte: new Date() };
-    }
-
+    // upcoming=true still returns ended events so home and explore keep real past listings.
+    // Upcoming events stay first; ended ones follow, most recent first.
     const orderBy = date && organizationId
       ? { startDate: 'asc' as const }
       : upcoming === 'true'
-        ? { startDate: 'asc' as const }
+        ? { startDate: 'desc' as const }
         : { createdAt: 'desc' as const };
 
     const eventInclude = {
@@ -327,13 +346,12 @@ export const getEvents = async (req: Request, res: Response) => {
       orderBy,
     });
 
-    // Homepage (and other upcoming lists) otherwise miss older events that are still promoted.
+    // Homepage (and other lists) otherwise miss older events that are still promoted.
     if (upcoming === 'true' && pageNum === 1 && promoted !== 'true' && !search) {
       const featured = await prisma.event.findMany({
         where: {
           isPublished: true,
           isPromoted: true,
-          endDate: { gte: new Date() },
           OR: [{ promotedUntil: null }, { promotedUntil: { gte: new Date() } }],
           ...(category ? { category: String(category) } : {}),
         },
@@ -364,15 +382,11 @@ export const getEvents = async (req: Request, res: Response) => {
     const soldMap = new Map(soldByEvent.map((row) => [row.eventId, row._count.id]));
 
     const eventsWithAvailability = events.map((event) => {
-      const inventory = (event.ticketTypes || []).reduce(
-        (sum, t) => sum + (t.quantity ?? 0),
-        0
-      );
       const ticketsSold = soldMap.get(event.id) || 0;
       return {
         ...event,
         ticketsSold,
-        ticketsAvailable: Math.max(0, inventory - ticketsSold),
+        ...availabilityFromTicketTypes(event.ticketTypes || [], ticketsSold),
       };
     });
 
@@ -478,10 +492,6 @@ export const getEvent = async (req: Request, res: Response) => {
 
     const formattedEvent = formatEventWithSettings(event);
 
-    const inventory = (event.ticketTypes || []).reduce(
-      (sum: number, t: { quantity: number | null }) => sum + (t.quantity ?? 0),
-      0
-    );
     const ticketsSold = await prisma.ticket.count({
       where: {
         eventId: event.id,
@@ -491,7 +501,7 @@ export const getEvent = async (req: Request, res: Response) => {
     const withAvailability = {
       ...formattedEvent,
       ticketsSold,
-      ticketsAvailable: Math.max(0, inventory - ticketsSold),
+      ...availabilityFromTicketTypes(event.ticketTypes || [], ticketsSold),
     };
 
     // Cache for 2 minutes
@@ -1476,22 +1486,38 @@ export const deleteEvent = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ message: 'Event not found or you do not have permission to delete it' });
     }
 
-    // Delete all related records first (due to foreign key constraints)
-    await prisma.ticket.deleteMany({
-      where: { eventId: eventId }
-    });
+    // Related rows block the event delete until they are removed.
+    await prisma.$transaction(async (tx) => {
+      const tickets = await tx.ticket.findMany({
+        where: { eventId },
+        select: { id: true },
+      });
+      const ticketIds = tickets.map((ticket) => ticket.id);
+      const orders = await tx.order.findMany({
+        where: { eventId },
+        select: { id: true },
+      });
+      const orderIds = orders.map((order) => order.id);
 
-    await prisma.ticketType.deleteMany({
-      where: { eventId: eventId }
-    });
+      if (ticketIds.length) {
+        await tx.whatsAppMessage.deleteMany({ where: { ticketId: { in: ticketIds } } });
+      }
+      if (orderIds.length) {
+        await tx.whatsAppMessage.deleteMany({ where: { orderId: { in: orderIds } } });
+      }
 
-    await prisma.vendorApplication.deleteMany({
-      where: { eventId: eventId }
-    });
-
-    // Finally delete the event
-    await prisma.event.delete({
-      where: { id: eventId }
+      await tx.ticket.deleteMany({ where: { eventId } });
+      await tx.order.deleteMany({ where: { eventId } });
+      await tx.vendorApplication.deleteMany({ where: { eventId } });
+      await tx.vendorType.deleteMany({ where: { eventId } });
+      await tx.ticketType.deleteMany({ where: { eventId } });
+      await tx.paymentIntent.deleteMany({ where: { eventId } });
+      await tx.auditLog.deleteMany({ where: { eventId } });
+      await tx.opsProject.updateMany({
+        where: { eventId },
+        data: { eventId: null },
+      });
+      await tx.event.delete({ where: { id: eventId } });
     });
 
     await cacheFlushPattern(`event_${eventId}`);
