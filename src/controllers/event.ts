@@ -305,6 +305,7 @@ export const getEvents = async (req: Request, res: Response) => {
             badgeText: true,
             ticketHeadline: true,
             venueLabel: true,
+            ticketSublabel: true,
             isPaused: true,
           },
         },
@@ -425,7 +426,7 @@ export const getEvent = async (req: Request, res: Response) => {
         select: {
           id: true, name: true, price: true, quantity: true,
           ticketStyle: true, accentColor: true, badgeText: true,
-          ticketHeadline: true, venueLabel: true, maxPerPerson: true, isPaused: true,
+            ticketHeadline: true, venueLabel: true, ticketSublabel: true, maxPerPerson: true, isPaused: true,
         },
       },
       vendorTypes: {
@@ -545,6 +546,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       badgeText?: string;
       ticketHeadline?: string;
       venueLabel?: string;
+      ticketSublabel?: string;
       maxPerPerson?: string | number;
       isPaused?: boolean;
       id?: string | number;
@@ -653,6 +655,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
             badgeText: ticketType.badgeText || null,
             ticketHeadline: ticketType.ticketHeadline || null,
             venueLabel: ticketType.venueLabel || null,
+            ticketSublabel: ticketType.ticketSublabel || null,
             maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
             isPaused: Boolean(ticketType.isPaused),
             eventId: event.id
@@ -757,6 +760,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       badgeText?: string;
       ticketHeadline?: string;
       venueLabel?: string;
+      ticketSublabel?: string;
       maxPerPerson?: string | number;
       isPaused?: boolean;
       id?: string | number;
@@ -941,6 +945,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
         if (ticketType.badgeText !== undefined) design.badgeText = ticketType.badgeText || null;
         if (ticketType.ticketHeadline !== undefined) design.ticketHeadline = ticketType.ticketHeadline || null;
         if (ticketType.venueLabel !== undefined) design.venueLabel = ticketType.venueLabel || null;
+        if (ticketType.ticketSublabel !== undefined) design.ticketSublabel = ticketType.ticketSublabel || null;
         if (ticketType.maxPerPerson !== undefined) {
           design.maxPerPerson = parseInt(String(ticketType.maxPerPerson), 10);
         }
@@ -967,6 +972,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
               badgeText: ticketType.badgeText || null,
               ticketHeadline: ticketType.ticketHeadline || null,
               venueLabel: ticketType.venueLabel || null,
+              ticketSublabel: ticketType.ticketSublabel || null,
               maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
               isPaused: Boolean(ticketType.isPaused),
               eventId: event.id,
@@ -1093,6 +1099,7 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
             badgeText: true,
             ticketHeadline: true,
             venueLabel: true,
+            ticketSublabel: true,
             isPaused: true,
           },
         },
@@ -1199,6 +1206,7 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
             badgeText: true,
             ticketHeadline: true,
             venueLabel: true,
+            ticketSublabel: true,
             maxPerPerson: true,
             isPaused: true,
           },
