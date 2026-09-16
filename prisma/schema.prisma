@@ -357,8 +357,9 @@ model TicketType {
   ticketStyle    String   @default("rose") // Visual preset: rose, gold, emerald, purple, midnight, ocean
   accentColor    String? // Optional custom hex override for the ticket stub
   badgeText      String? // Custom label on the ticket stub (defaults to ticket name)
-  ticketHeadline String? // e.g. "COME AND JOIN"
-  venueLabel     String? // e.g. "LIVE AT"
+  ticketHeadline String? // e.g. "COME AND JOIN" / "You're invited"
+  venueLabel     String? // e.g. "LIVE AT" / "Venue"
+  ticketSublabel String? // e.g. "First class" / "Admit one"
   /** Organizer closed sales for this type (e.g. a past day pass). Existing tickets stay valid. */
   isPaused       Boolean  @default(false)
   maxPerPerson   Int?     @default(5)
