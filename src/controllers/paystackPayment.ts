@@ -19,6 +19,7 @@ import {
   VendorCheckoutPayload,
 } from '../services/checkoutFulfillment';
 import { isValidEmail } from '../utils/validation';
+import { assertTicketSalesOpen } from '../services/ticketSales';
 
 async function fulfillPaymentIntent(reference: string, paystackStatus?: string) {
   const intent = await prisma.paymentIntent.findUnique({ where: { reference } });
@@ -118,6 +119,11 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
       });
       if (!ticketType || ticketType.eventId !== event.id) {
         return res.status(404).json({ message: 'Ticket type not found' });
+      }
+      try {
+        assertTicketSalesOpen(ticketType);
+      } catch (err: any) {
+        return res.status(err.status || 400).json({ message: err.message, code: err.code });
       }
 
       const absorbFee = event.organization?.absorbFee ?? false;

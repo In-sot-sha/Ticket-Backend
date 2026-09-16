@@ -12,6 +12,7 @@ import {
   countOwnedTickets,
 } from '../services/guestUser';
 import { calculateUnitOrderFees } from '../constants/fees';
+import { assertTicketSalesOpen } from '../services/ticketSales';
 
 /**
  * Get all tickets for the authenticated user or for an event (by eventId param)
@@ -211,6 +212,12 @@ export const purchaseTicket = async (req: AuthRequest, res: Response) => {
 
     if (!ticketType) {
       res.status(404).json({ message: 'Ticket type not found' });
+      return;
+    }
+    try {
+      assertTicketSalesOpen(ticketType);
+    } catch (err: any) {
+      res.status(err.status || 400).json({ message: err.message, code: err.code });
       return;
     }
 
@@ -681,6 +688,12 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
       res.status(404).json({ message: 'Ticket type not found' });
       return;
     }
+    try {
+      assertTicketSalesOpen(ticketType);
+    } catch (err: any) {
+      res.status(err.status || 400).json({ message: err.message, code: err.code });
+      return;
+    }
 
     const absorbFee = event.organization?.absorbFee ?? false;
     const fees = calculateUnitOrderFees(ticketType.price, Number(quantity), absorbFee);
@@ -833,6 +846,12 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
 
     if (!ticketType || ticketType.eventId !== event.id) {
       res.status(404).json({ message: 'Ticket type not found for this event' });
+      return;
+    }
+    try {
+      assertTicketSalesOpen(ticketType);
+    } catch (err: any) {
+      res.status(err.status || 400).json({ message: err.message, code: err.code });
       return;
     }
 

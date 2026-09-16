@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -359,6 +359,8 @@ model TicketType {
   badgeText      String? // Custom label on the ticket stub (defaults to ticket name)
   ticketHeadline String? // e.g. "COME AND JOIN"
   venueLabel     String? // e.g. "LIVE AT"
+  /** Organizer closed sales for this type (e.g. a past day pass). Existing tickets stay valid. */
+  isPaused       Boolean  @default(false)
   maxPerPerson   Int?     @default(5)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

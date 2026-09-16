@@ -1,5 +1,6 @@
 import { prisma } from '../prisma';
 import { calculateUnitOrderFees } from '../constants/fees';
+import { assertTicketSalesOpen } from './ticketSales';
 import {
   assertMaxPerPerson,
   getMaxPerPerson,
@@ -126,6 +127,7 @@ export async function fulfillTicketCheckout(input: {
   if (!ticketType || ticketType.eventId !== event.id) {
     throw Object.assign(new Error('Ticket type not found'), { status: 404 });
   }
+  assertTicketSalesOpen(ticketType);
 
   const sanitizedFirstName = sanitizeString(payload.firstName);
   const sanitizedLastName = sanitizeString(payload.lastName);

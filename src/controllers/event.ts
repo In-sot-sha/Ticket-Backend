@@ -305,6 +305,7 @@ export const getEvents = async (req: Request, res: Response) => {
             badgeText: true,
             ticketHeadline: true,
             venueLabel: true,
+            isPaused: true,
           },
         },
         vendorTypes: {
@@ -400,7 +401,7 @@ export const getEvent = async (req: Request, res: Response) => {
         select: {
           id: true, name: true, price: true, quantity: true,
           ticketStyle: true, accentColor: true, badgeText: true,
-          ticketHeadline: true, venueLabel: true, maxPerPerson: true,
+          ticketHeadline: true, venueLabel: true, maxPerPerson: true, isPaused: true,
         },
       },
       vendorTypes: {
@@ -521,6 +522,8 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       ticketHeadline?: string;
       venueLabel?: string;
       maxPerPerson?: string | number;
+      isPaused?: boolean;
+      id?: string | number;
     }>>(ticketTypes);
     
     const parsedVendorSettings = parseJsonField<{
@@ -627,6 +630,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
             ticketHeadline: ticketType.ticketHeadline || null,
             venueLabel: ticketType.venueLabel || null,
             maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
+            isPaused: Boolean(ticketType.isPaused),
             eventId: event.id
           }
         });
@@ -730,6 +734,8 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       ticketHeadline?: string;
       venueLabel?: string;
       maxPerPerson?: string | number;
+      isPaused?: boolean;
+      id?: string | number;
     }>>(ticketTypes);
 
     const parsedVendorSettings = parseJsonField<{
@@ -873,11 +879,15 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
         select: { id: true, name: true },
       });
 
-      const incomingNames = new Set(parsedTicketTypes.map((t: any) => t.name));
+      const isKept = (existing: { id: number; name: string }) =>
+        parsedTicketTypes.some((t: any) =>
+          (t.id != null && Number(t.id) === existing.id) ||
+          (t.id == null && t.name === existing.name)
+        );
 
       // Handle removed ticket types
       for (const existing of existingTypes) {
-        if (!incomingNames.has(existing.name)) {
+        if (!isKept(existing)) {
           const soldCount = await prisma.ticket.count({
             where: { ticketTypeId: existing.id, status: { in: ['VALID', 'USED'] } },
           });
@@ -894,21 +904,32 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
         }
       }
 
-      // Upsert incoming ticket types
+      // Upsert incoming ticket types. Only overwrite design fields when the client sends them
+      // so a settings pause/save does not wipe ticket style.
       for (const ticketType of parsedTicketTypes) {
-        const match = existingTypes.find((e: any) => e.name === ticketType.name);
+        const match = existingTypes.find((e: any) =>
+          (ticketType.id != null && Number(ticketType.id) === e.id) ||
+          (ticketType.id == null && e.name === ticketType.name)
+        );
+        const design: Record<string, unknown> = {};
+        if (ticketType.ticketStyle !== undefined) design.ticketStyle = ticketType.ticketStyle || 'rose';
+        if (ticketType.accentColor !== undefined) design.accentColor = ticketType.accentColor || null;
+        if (ticketType.badgeText !== undefined) design.badgeText = ticketType.badgeText || null;
+        if (ticketType.ticketHeadline !== undefined) design.ticketHeadline = ticketType.ticketHeadline || null;
+        if (ticketType.venueLabel !== undefined) design.venueLabel = ticketType.venueLabel || null;
+        if (ticketType.maxPerPerson !== undefined) {
+          design.maxPerPerson = parseInt(String(ticketType.maxPerPerson), 10);
+        }
+        if (ticketType.isPaused !== undefined) design.isPaused = Boolean(ticketType.isPaused);
+
         if (match) {
           await prisma.ticketType.update({
             where: { id: match.id },
             data: {
+              name: ticketType.name,
               price: parseFloat(String(ticketType.price ?? 0)),
               quantity: parseInt(String(ticketType.quantity ?? 0), 10),
-              ticketStyle: ticketType.ticketStyle || 'rose',
-              accentColor: ticketType.accentColor || null,
-              badgeText: ticketType.badgeText || null,
-              ticketHeadline: ticketType.ticketHeadline || null,
-              venueLabel: ticketType.venueLabel || null,
-              maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
+              ...design,
             },
           });
         } else {
@@ -923,6 +944,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
               ticketHeadline: ticketType.ticketHeadline || null,
               venueLabel: ticketType.venueLabel || null,
               maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
+              isPaused: Boolean(ticketType.isPaused),
               eventId: event.id,
             },
           });
@@ -1047,6 +1069,7 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
             badgeText: true,
             ticketHeadline: true,
             venueLabel: true,
+            isPaused: true,
           },
         },
         vendorTypes: {
@@ -1153,6 +1176,7 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
             ticketHeadline: true,
             venueLabel: true,
             maxPerPerson: true,
+            isPaused: true,
           },
         },
         vendorTypes: {
