@@ -456,40 +456,24 @@ export const createTicket = async (req: AuthRequest, res: Response) => {
  */
 export const validateTicket = async (req: AuthRequest, res: Response) => {
   try {
-    const { qrCode, id, eventId } = req.body;
-    const identifier = qrCode || id || req.body.code || req.params.id || req.query.id || req.query.qrCode;
+    const { qrCode, eventId } = req.body;
+    const identifier = qrCode || req.body.code || req.query.qrCode;
     const targetEventId = eventId || req.body.eventId || req.query.eventId;
 
-    if (!identifier) {
-      res.status(400).json({ message: 'Ticket identifier (qrCode or id) is required' });
+    if (!identifier || String(identifier).trim() === '') {
+      res.status(400).json({ message: 'Ticket QR code is required' });
       return;
     }
 
-    let ticket = null;
-    const numericId = Number(identifier);
-    const isNumeric = !isNaN(numericId) && numericId > 0 && String(numericId) === String(identifier);
-
-    if (isNumeric) {
-      ticket = await prisma.ticket.findUnique({
-        where: { id: numericId },
-        include: {
-          event: true,
-          ticketType: true,
-          user: true,
-        }
-      });
-    }
-
-    if (!ticket) {
-      ticket = await prisma.ticket.findFirst({
-        where: { qrCode: String(identifier) },
-        include: {
-          event: true,
-          ticketType: true,
-          user: true,
-        }
-      });
-    }
+    // Only the unique qrCode opens the gate — never the numeric ticket id.
+    const ticket = await prisma.ticket.findFirst({
+      where: { qrCode: String(identifier) },
+      include: {
+        event: true,
+        ticketType: true,
+        user: true,
+      }
+    });
 
     if (!ticket) {
       res.status(404).json({ message: 'Ticket not found' });
