@@ -3,6 +3,7 @@ import { TicketStatus } from '@prisma/client';
 import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/auth';
 import { uploadEventImage } from '../utils/imageUpload';
+import { parseValidOn } from '../services/ticketValidity';
 
 // Helper to generate a URL-friendly slug
 function createSlug(title: string): string {
@@ -326,6 +327,7 @@ export const getEvents = async (req: Request, res: Response) => {
             venueLabel: true,
             ticketSublabel: true,
             isPaused: true,
+            validOn: true,
           },
         },
         vendorTypes: {
@@ -440,7 +442,7 @@ export const getEvent = async (req: Request, res: Response) => {
         select: {
           id: true, name: true, price: true, quantity: true,
           ticketStyle: true, accentColor: true, badgeText: true,
-            ticketHeadline: true, venueLabel: true, ticketSublabel: true, maxPerPerson: true, isPaused: true,
+            ticketHeadline: true, venueLabel: true, ticketSublabel: true, maxPerPerson: true, isPaused: true, validOn: true,
         },
       },
       vendorTypes: {
@@ -559,6 +561,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       ticketSublabel?: string;
       maxPerPerson?: string | number;
       isPaused?: boolean;
+      validOn?: string | null;
       id?: string | number;
     }>>(ticketTypes);
     
@@ -668,6 +671,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
             ticketSublabel: ticketType.ticketSublabel || null,
             maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
             isPaused: Boolean(ticketType.isPaused),
+            validOn: parseValidOn(ticketType.validOn),
             eventId: event.id
           }
         });
@@ -773,6 +777,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       ticketSublabel?: string;
       maxPerPerson?: string | number;
       isPaused?: boolean;
+      validOn?: string | null;
       id?: string | number;
     }>>(ticketTypes);
 
@@ -960,6 +965,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
           design.maxPerPerson = parseInt(String(ticketType.maxPerPerson), 10);
         }
         if (ticketType.isPaused !== undefined) design.isPaused = Boolean(ticketType.isPaused);
+        if (ticketType.validOn !== undefined) design.validOn = parseValidOn(ticketType.validOn);
 
         if (match) {
           await prisma.ticketType.update({
@@ -985,6 +991,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
               ticketSublabel: ticketType.ticketSublabel || null,
               maxPerPerson: ticketType.maxPerPerson !== undefined ? parseInt(String(ticketType.maxPerPerson), 10) : 5,
               isPaused: Boolean(ticketType.isPaused),
+              validOn: parseValidOn(ticketType.validOn),
               eventId: event.id,
             },
           });
@@ -1111,6 +1118,7 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
             venueLabel: true,
             ticketSublabel: true,
             isPaused: true,
+            validOn: true,
           },
         },
         vendorTypes: {
@@ -1219,6 +1227,7 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
             ticketSublabel: true,
             maxPerPerson: true,
             isPaused: true,
+            validOn: true,
           },
         },
         vendorTypes: {
