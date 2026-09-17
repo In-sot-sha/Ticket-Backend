@@ -6,6 +6,8 @@ import {
   sendEmail,
   generateSupportReplyEmail,
   generateSupportResolvedEmail,
+  generateHostApplicationApprovedEmail,
+  generateHostApplicationRejectedEmail,
 } from '../services/email';
 
 const frontendBase = () =>
@@ -545,6 +547,19 @@ export const verifyHostApplication = async (req: AuthRequest, res: Response) => 
       },
     });
 
+    if (updated.owner?.email) {
+      const tpl = generateHostApplicationApprovedEmail({
+        firstName: updated.owner.firstName,
+        organizationName: updated.name,
+      });
+      void sendEmail({
+        to: updated.owner.email,
+        subject: tpl.subject,
+        html: tpl.html,
+        text: tpl.text,
+      }).catch((err) => console.error('[Host] Approval email failed:', err));
+    }
+
     return res.json({
       message: 'Host application approved',
       organization: updated,
@@ -603,6 +618,20 @@ export const rejectHostApplication = async (req: AuthRequest, res: Response) => 
         },
       },
     });
+
+    if (updated.owner?.email) {
+      const tpl = generateHostApplicationRejectedEmail({
+        firstName: updated.owner.firstName,
+        organizationName: updated.name,
+        reason: String(reason).trim(),
+      });
+      void sendEmail({
+        to: updated.owner.email,
+        subject: tpl.subject,
+        html: tpl.html,
+        text: tpl.text,
+      }).catch((err) => console.error('[Host] Rejection email failed:', err));
+    }
 
     return res.json({
       message: 'Host application rejected',

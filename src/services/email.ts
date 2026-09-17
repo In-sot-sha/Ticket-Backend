@@ -818,6 +818,165 @@ Need help? ${SUPPORT_EMAIL}
   };
 };
 
+const escapeHtml = (value: string) =>
+  String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+/** Inbox for new host applications (falls back to support / SMTP user). */
+export function getAdminNotifyEmail(): string | null {
+  const addr = (
+    process.env.ADMIN_NOTIFY_EMAIL ||
+    process.env.SUPPORT_EMAIL ||
+    process.env.EMAIL_USER ||
+    ''
+  ).trim();
+  return addr || null;
+}
+
+export const generateHostApplicationReceivedEmail = (data: {
+  firstName: string;
+  organizationName: string;
+}) => {
+  const name = escapeHtml(data.firstName || 'there');
+  const org = escapeHtml(data.organizationName);
+  return {
+    subject: 'We received your host application',
+    html: emailLayout({
+      eyebrow: 'Host application',
+      preheader: `Your application for ${data.organizationName} is in review.`,
+      bodyHtml: `
+        ${emailCard(
+          `
+          <p style="margin:0 0 16px 0;font-size:13px;line-height:1.5;font-weight:500;color:#7b7d81;text-align:center;font-family:${FONT};">
+            Application received
+          </p>
+          <h1 style="margin:0 0 16px 0;font-size:32px;font-weight:600;letter-spacing:-0.64px;line-height:1.15;font-family:${FONT};color:#14171e;text-align:center;">
+            You&apos;re on the host list
+          </h1>
+          <p style="margin:0 auto;max-width:420px;font-size:16px;line-height:1.5;color:#43454b;text-align:center;font-family:${FONT};">
+            Hi ${name}, we received your application for <strong>${org}</strong>. Our team will review it and email you when it&apos;s approved or if we need more detail.
+          </p>
+          ${emailButton(`${SITE_URL}/organizer`, 'Open organizer dashboard')}
+          `,
+          { padding: '32px 20px 36px 20px', align: 'center' }
+        )}
+      `,
+    }),
+    text: `Hi ${data.firstName || 'there'}, we received your PartyStorm host application for ${data.organizationName}. We'll email you once it's reviewed.\n\n${SITE_URL}/organizer`,
+  };
+};
+
+export const generateHostApplicationAdminNoticeEmail = (data: {
+  firstName: string;
+  lastName: string;
+  email: string;
+  organizationName: string;
+  description?: string | null;
+  contactInfo?: string | null;
+}) => {
+  const org = escapeHtml(data.organizationName);
+  const applicant = escapeHtml(`${data.firstName} ${data.lastName}`.trim());
+  const email = escapeHtml(data.email);
+  const description = data.description?.trim()
+    ? escapeHtml(data.description.trim())
+    : '—';
+  const contact = data.contactInfo?.trim() ? escapeHtml(data.contactInfo.trim()) : '—';
+  return {
+    subject: `New host application: ${data.organizationName}`,
+    html: emailLayout({
+      eyebrow: 'Admin',
+      preheader: `${data.firstName} applied to host as ${data.organizationName}`,
+      bodyHtml: `
+        ${emailCard(
+          `
+          <h1 style="margin:0 0 16px 0;font-size:28px;font-weight:600;letter-spacing:-0.5px;line-height:1.2;font-family:${FONT};color:#14171e;text-align:left;">
+            New host to review
+          </h1>
+          <p style="margin:0 0 8px 0;font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:0.06em;">Organization</p>
+          <p style="margin:0 0 16px 0;font-size:16px;font-weight:600;color:#14171e;">${org}</p>
+          <p style="margin:0 0 8px 0;font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:0.06em;">Applicant</p>
+          <p style="margin:0 0 16px 0;font-size:15px;color:#43454b;">${applicant}<br/>${email}</p>
+          <p style="margin:0 0 8px 0;font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:0.06em;">About</p>
+          <p style="margin:0 0 16px 0;font-size:15px;line-height:1.5;color:#43454b;white-space:pre-wrap;">${description}</p>
+          <p style="margin:0 0 8px 0;font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:0.06em;">Contact</p>
+          <p style="margin:0;font-size:15px;color:#43454b;">${contact}</p>
+          ${emailButton(`${SITE_URL}/admin/organizations`, 'Review applications')}
+          `,
+          { padding: '28px 20px 32px 20px', align: 'left' }
+        )}
+      `,
+    }),
+    text: `New host application: ${data.organizationName}\nApplicant: ${data.firstName} ${data.lastName} <${data.email}>\nAbout: ${data.description || '—'}\nContact: ${data.contactInfo || '—'}\n\n${SITE_URL}/admin/organizations`,
+  };
+};
+
+export const generateHostApplicationApprovedEmail = (data: {
+  firstName: string;
+  organizationName: string;
+}) => {
+  const name = escapeHtml(data.firstName || 'there');
+  const org = escapeHtml(data.organizationName);
+  return {
+    subject: 'Your PartyStorm host account is approved',
+    html: emailLayout({
+      eyebrow: 'Host approved',
+      preheader: `${data.organizationName} is verified. You can publish events.`,
+      bodyHtml: `
+        ${emailCard(
+          `
+          <h1 style="margin:0 0 16px 0;font-size:32px;font-weight:600;letter-spacing:-0.64px;line-height:1.15;font-family:${FONT};color:#14171e;text-align:center;">
+            You&apos;re verified
+          </h1>
+          <p style="margin:0 auto;max-width:420px;font-size:16px;line-height:1.5;color:#43454b;text-align:center;font-family:${FONT};">
+            Hi ${name}, <strong>${org}</strong> is approved. You can publish events, sell tickets, and get paid through PartyStorm.
+          </p>
+          ${emailButton(`${SITE_URL}/organizer/events/create`, 'Create an event', { variant: 'rose' })}
+          `,
+          { padding: '32px 20px 36px 20px', align: 'center' }
+        )}
+      `,
+    }),
+    text: `Hi ${data.firstName || 'there'}, ${data.organizationName} is approved on PartyStorm. Create an event: ${SITE_URL}/organizer/events/create`,
+  };
+};
+
+export const generateHostApplicationRejectedEmail = (data: {
+  firstName: string;
+  organizationName: string;
+  reason: string;
+}) => {
+  const name = escapeHtml(data.firstName || 'there');
+  const org = escapeHtml(data.organizationName);
+  const reason = escapeHtml(data.reason);
+  return {
+    subject: 'Update on your PartyStorm host application',
+    html: emailLayout({
+      eyebrow: 'Host application',
+      preheader: `We could not approve ${data.organizationName} yet.`,
+      bodyHtml: `
+        ${emailCard(
+          `
+          <h1 style="margin:0 0 16px 0;font-size:28px;font-weight:600;letter-spacing:-0.5px;line-height:1.2;font-family:${FONT};color:#14171e;text-align:center;">
+            Application not approved
+          </h1>
+          <p style="margin:0 auto 20px auto;max-width:420px;font-size:16px;line-height:1.5;color:#43454b;text-align:center;font-family:${FONT};">
+            Hi ${name}, we reviewed <strong>${org}</strong> and cannot verify it yet.
+          </p>
+          <p style="margin:0 0 8px 0;font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:0.06em;text-align:left;">Reason</p>
+          <p style="margin:0;font-size:15px;line-height:1.5;color:#43454b;white-space:pre-wrap;text-align:left;">${reason}</p>
+          ${emailButton(`${SITE_URL}/become-organizer`, 'Update and resubmit')}
+          `,
+          { padding: '32px 20px 36px 20px', align: 'center' }
+        )}
+      `,
+    }),
+    text: `Hi ${data.firstName || 'there'}, we could not approve ${data.organizationName} yet.\n\nReason: ${data.reason}\n\nUpdate and resubmit: ${SITE_URL}/become-organizer`,
+  };
+};
+
 export const generateVendorApplicationEmail = (
   userEmail: string,
   applicationData: {
@@ -1143,6 +1302,10 @@ export const EMAIL_PREVIEW_IDS = [
   'support-received',
   'support-reply',
   'support-resolved',
+  'host-received',
+  'host-admin',
+  'host-approved',
+  'host-rejected',
 ] as const;
 
 export type EmailPreviewId = (typeof EMAIL_PREVIEW_IDS)[number];
@@ -1237,6 +1400,31 @@ export function getEmailPreview(id: EmailPreviewId): EmailTemplate {
         note: 'Marked resolved after ticket recovery succeeded.',
         supportUrl: `${SITE_URL}/support`,
       });
+    case 'host-received':
+      return generateHostApplicationReceivedEmail({
+        firstName: 'Ada',
+        organizationName: 'Kano Live',
+      });
+    case 'host-admin':
+      return generateHostApplicationAdminNoticeEmail({
+        firstName: 'Ada',
+        lastName: 'Bello',
+        email: 'ada@example.com',
+        organizationName: 'Kano Live',
+        description: 'Nightlife and live music in Kano.',
+        contactInfo: 'https://kanolive.ng',
+      });
+    case 'host-approved':
+      return generateHostApplicationApprovedEmail({
+        firstName: 'Ada',
+        organizationName: 'Kano Live',
+      });
+    case 'host-rejected':
+      return generateHostApplicationRejectedEmail({
+        firstName: 'Ada',
+        organizationName: 'Kano Live',
+        reason: 'Please add a public website or Instagram and a clear business description, then resubmit.',
+      });
     default:
       return generateWelcomeEmail('there');
   }
@@ -1252,6 +1440,10 @@ export default {
   generateTicketConfirmationEmail,
   generatePasswordResetEmail,
   generateWelcomeEmail,
+  generateHostApplicationReceivedEmail,
+  generateHostApplicationAdminNoticeEmail,
+  generateHostApplicationApprovedEmail,
+  generateHostApplicationRejectedEmail,
   generateVendorApplicationEmail,
   generateStaffInviteEmail,
   generateOrganizerMessageEmail,

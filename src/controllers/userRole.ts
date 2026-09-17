@@ -2,6 +2,12 @@ import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
 import { uploadOrgLogoImage } from '../utils/imageUpload';
+import {
+  sendEmail,
+  getAdminNotifyEmail,
+  generateHostApplicationReceivedEmail,
+  generateHostApplicationAdminNoticeEmail,
+} from '../services/email';
 
 // Request to become an organizer (or resubmit after rejection)
 export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
@@ -70,6 +76,37 @@ export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
         ownedOrganizations: true,
       },
     });
+
+    if (user.email) {
+      const received = generateHostApplicationReceivedEmail({
+        firstName: user.firstName,
+        organizationName: organization.name,
+      });
+      void sendEmail({
+        to: user.email,
+        subject: received.subject,
+        html: received.html,
+        text: received.text,
+      }).catch((err) => console.error('[Host] Applicant confirmation email failed:', err));
+    }
+
+    const adminTo = getAdminNotifyEmail();
+    if (adminTo) {
+      const notice = generateHostApplicationAdminNoticeEmail({
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email || 'no-email',
+        organizationName: organization.name,
+        description,
+        contactInfo,
+      });
+      void sendEmail({
+        to: adminTo,
+        subject: notice.subject,
+        html: notice.html,
+        text: notice.text,
+      }).catch((err) => console.error('[Host] Admin notice email failed:', err));
+    }
 
     return res.status(200).json({
       message: existingOrg ? 'Application resubmitted successfully' : 'Successfully became an organizer',
