@@ -16,6 +16,7 @@ import { calculateUnitOrderFees } from '../constants/fees';
 import { assertTicketSalesOpen } from '../services/ticketSales';
 import { writeAuditLog } from '../services/auditLog';
 import { authorizeEventOps } from '../services/eventAccess';
+import { formatDayLong, todayYmd, ymdInZone } from '../services/ticketValidity';
 
 const PAID_GATE_METHODS = ['CASH', 'POS', 'TRANSFER'] as const;
 type PaidGateMethod = (typeof PAID_GATE_METHODS)[number];
@@ -490,25 +491,104 @@ export const validateTicket = async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    if (ticket.status === 'USED') {
-      res.status(400).json({ message: 'This ticket has already been scanned and used.', status: 'USED', ticket });
-      return;
-    }
-
     if (ticket.status === 'CANCELLED') {
       res.status(400).json({ message: 'This ticket is cancelled and no longer valid.', status: 'CANCELLED', ticket });
       return;
     }
 
-    // Mark as USED
+    const today = todayYmd();
+    const eventStartDay = ymdInZone(new Date(ticket.event.startDate));
+    const eventEndDay = ymdInZone(new Date(ticket.event.endDate));
+    const multiDay = eventStartDay !== eventEndDay;
+    const dayPassYmd = ticket.ticketType?.validOn
+      ? ymdInZone(new Date(ticket.ticketType.validOn))
+      : null;
+
+    if (today < eventStartDay) {
+      res.status(400).json({
+        message: 'This event has not started yet.',
+        status: 'EVENT_NOT_STARTED',
+        ticket,
+      });
+      return;
+    }
+
+    if (today > eventEndDay) {
+      res.status(400).json({
+        message: 'This event has already ended.',
+        status: 'EVENT_ENDED',
+        ticket,
+      });
+      return;
+    }
+
+    if (dayPassYmd && today !== dayPassYmd) {
+      const when = formatDayLong(dayPassYmd);
+      const tooEarly = today < dayPassYmd;
+      res.status(400).json({
+        message: tooEarly
+          ? `This pass is for ${when}. Come back that day.`
+          : `This pass was for ${when}. It cannot be used today.`,
+        status: 'WRONG_DAY',
+        ticket,
+      });
+      return;
+    }
+
+    const singleUse = Boolean(dayPassYmd) || !multiDay;
+    if (singleUse && ticket.status === 'USED') {
+      res.status(400).json({
+        message: 'This ticket has already been scanned and used.',
+        status: 'USED',
+        ticket,
+      });
+      return;
+    }
+
+    const alreadyToday = await prisma.ticketCheckIn.findUnique({
+      where: { ticketId_eventDay: { ticketId: ticket.id, eventDay: today } },
+    });
+    if (alreadyToday) {
+      res.status(400).json({
+        message: multiDay && !dayPassYmd
+          ? 'Already checked in today. Come back tomorrow.'
+          : 'This ticket has already been scanned and used.',
+        status: multiDay && !dayPassYmd ? 'ALREADY_IN_TODAY' : 'USED',
+        ticket,
+      });
+      return;
+    }
+
+    try {
+      await prisma.ticketCheckIn.create({
+        data: {
+          ticketId: ticket.id,
+          eventDay: today,
+          scannedBy: req.userId ?? null,
+        },
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        res.status(400).json({
+          message: singleUse
+            ? 'This ticket has already been scanned and used.'
+            : 'Already checked in today. Come back tomorrow.',
+          status: singleUse ? 'USED' : 'ALREADY_IN_TODAY',
+          ticket,
+        });
+        return;
+      }
+      throw err;
+    }
+
     const updatedTicket = await prisma.ticket.update({
       where: { id: ticket.id },
-      data: { status: 'USED' },
+      data: singleUse ? { status: 'USED' } : { status: 'VALID' },
       include: {
         event: true,
         ticketType: true,
         user: true,
-      }
+      },
     });
 
     await writeAuditLog({
@@ -520,16 +600,22 @@ export const validateTicket = async (req: AuthRequest, res: Response) => {
       metadata: {
         qrCode: updatedTicket.qrCode,
         ticketType: updatedTicket.ticketType?.name,
+        eventDay: today,
         attendee: updatedTicket.user
           ? `${updatedTicket.user.firstName} ${updatedTicket.user.lastName}`.trim()
           : null,
       },
     });
 
+    const welcome =
+      multiDay && !dayPassYmd
+        ? `Welcome — entry for ${formatDayLong(today)}`
+        : 'Ticket validated — entry approved';
+
     res.status(200).json({
       valid: true,
-      message: 'Ticket validated — entry approved',
-      ticket: updatedTicket
+      message: welcome,
+      ticket: updatedTicket,
     });
   } catch (error) {
     console.error('Error validating ticket:', error);

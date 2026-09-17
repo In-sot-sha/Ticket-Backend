@@ -373,6 +373,8 @@ model TicketType {
   /** Organizer closed sales for this type (e.g. a past day pass). Existing tickets stay valid. */
   isPaused       Boolean  @default(false)
   maxPerPerson   Int?     @default(5)
+  /** Calendar day this type admits (Africa/Lagos). Null = every event day, one entry per day. */
+  validOn        DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -402,9 +404,24 @@ model Ticket {
   ticketType TicketType @relation(fields: [ticketTypeId], references: [id])
   order      Order?     @relation(fields: [orderId], references: [id])
   soldBy     User?      @relation("TicketsSold", fields: [soldByUserId], references: [id])
+  checkIns   TicketCheckIn[]
 
   @@index([eventId, soldByUserId])
   @@index([eventId, paymentMethod])
+}
+
+model TicketCheckIn {
+  id        Int      @id @default(autoincrement())
+  ticketId  Int
+  /** YYYY-MM-DD in Africa/Lagos */
+  eventDay  String
+  scannedBy Int?
+  createdAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@unique([ticketId, eventDay])
+  @@index([eventDay])
 }
 
 // Who did what at the gate — sales, check-ins, and other money-sensitive actions
