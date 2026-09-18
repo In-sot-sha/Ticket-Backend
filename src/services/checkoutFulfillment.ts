@@ -1,5 +1,5 @@
 import { prisma } from '../prisma';
-import { calculateUnitOrderFees } from '../constants/fees';
+import { calculateCartOrderFees, calculateUnitOrderFees } from '../constants/fees';
 import { assertTicketSalesOpen } from './ticketSales';
 import {
   assertMaxPerPerson,
@@ -8,15 +8,43 @@ import {
 } from './guestUser';
 import { isValidEmail, isValidName, normalizePhone, sanitizeString } from '../utils/validation';
 
+export type TicketLineItem = {
+  ticketTypeId: number;
+  quantity: number;
+};
+
 export type TicketCheckoutPayload = {
   firstName: string;
   lastName: string;
   email: string;
   phone?: string | null;
   eventId: number;
-  ticketTypeId: number;
-  quantity: number;
+  items?: TicketLineItem[];
+  /** @deprecated Prefer items. Kept so older intents still fulfill. */
+  ticketTypeId?: number;
+  quantity?: number;
 };
+
+export function normalizeTicketItems(body: {
+  items?: Array<{ ticketTypeId?: number; quantity?: number }>;
+  ticketTypeId?: number;
+  quantity?: number;
+}): TicketLineItem[] {
+  const raw =
+    Array.isArray(body.items) && body.items.length > 0
+      ? body.items
+      : body.ticketTypeId != null
+        ? [{ ticketTypeId: body.ticketTypeId, quantity: body.quantity }]
+        : [];
+  const merged = new Map<number, number>();
+  for (const row of raw) {
+    const id = Number(row.ticketTypeId);
+    const qty = Math.floor(Number(row.quantity));
+    if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
+    merged.set(id, (merged.get(id) || 0) + qty);
+  }
+  return [...merged.entries()].map(([ticketTypeId, quantity]) => ({ ticketTypeId, quantity }));
+}
 
 export type VendorCheckoutPayload = {
   eventId: number;
@@ -136,13 +164,22 @@ export async function fulfillTicketCheckout(input: {
   });
   if (!event) throw Object.assign(new Error('Event not found'), { status: 404 });
 
-  const ticketType = await prisma.ticketType.findUnique({
-    where: { id: Number(payload.ticketTypeId) },
-  });
-  if (!ticketType || ticketType.eventId !== event.id) {
-    throw Object.assign(new Error('Ticket type not found'), { status: 404 });
+  const items = normalizeTicketItems(payload);
+  if (items.length === 0) {
+    throw Object.assign(new Error('No tickets selected'), { status: 400 });
   }
-  assertTicketSalesOpen(ticketType);
+
+  const ticketTypes = await prisma.ticketType.findMany({
+    where: { id: { in: items.map((i) => i.ticketTypeId) } },
+  });
+  const typeById = new Map(ticketTypes.map((t) => [t.id, t]));
+  for (const item of items) {
+    const ticketType = typeById.get(item.ticketTypeId);
+    if (!ticketType || ticketType.eventId !== event.id) {
+      throw Object.assign(new Error('Ticket type not found'), { status: 404 });
+    }
+    assertTicketSalesOpen(ticketType);
+  }
 
   const sanitizedFirstName = sanitizeString(payload.firstName);
   const sanitizedLastName = sanitizeString(payload.lastName);
@@ -160,29 +197,32 @@ export async function fulfillTicketCheckout(input: {
     });
   }
 
-  const quantity = Number(payload.quantity);
-  const maxPerPerson = getMaxPerPerson(ticketType);
-  try {
-    await assertMaxPerPerson({
-      eventId: Number(payload.eventId),
-      ticketTypeId: Number(payload.ticketTypeId),
-      quantity,
-      maxPerPerson,
-      email: cleanEmail || guestUser.email,
-      phone: cleanPhone || guestUser.phone,
-      extraUserIds: [guestUser.id],
-    });
-  } catch (limitErr: any) {
-    if (limitErr?.code === 'MAX_PER_PERSON') {
-      throw Object.assign(new Error(limitErr.message), {
-        status: 400,
-        code: 'MAX_PER_PERSON',
-        owned: limitErr.owned,
-        maxPerPerson: limitErr.maxPerPerson,
-        remaining: limitErr.remaining,
+  const quantity = items.reduce((sum, item) => sum + item.quantity, 0);
+  for (const item of items) {
+    const ticketType = typeById.get(item.ticketTypeId)!;
+    const maxPerPerson = getMaxPerPerson(ticketType);
+    try {
+      await assertMaxPerPerson({
+        eventId: Number(payload.eventId),
+        ticketTypeId: item.ticketTypeId,
+        quantity: item.quantity,
+        maxPerPerson,
+        email: cleanEmail || guestUser.email,
+        phone: cleanPhone || guestUser.phone,
+        extraUserIds: [guestUser.id],
       });
+    } catch (limitErr: any) {
+      if (limitErr?.code === 'MAX_PER_PERSON') {
+        throw Object.assign(new Error(limitErr.message), {
+          status: 400,
+          code: 'MAX_PER_PERSON',
+          owned: limitErr.owned,
+          maxPerPerson: limitErr.maxPerPerson,
+          remaining: limitErr.remaining,
+        });
+      }
+      throw limitErr;
     }
-    throw limitErr;
   }
 
   const result = await prisma.$transaction(async (tx) => {
@@ -202,27 +242,42 @@ export async function fulfillTicketCheckout(input: {
     });
 
     const tickets = [];
-    for (let i = 0; i < quantity; i++) {
-      const ticket = await tx.ticket.create({
-        data: {
-          eventId: event.id,
-          ticketTypeId: ticketType.id,
-          userId: guestUser.id,
-          qrCode: `QR-${Date.now()}-${i}-${Math.random()}`,
-          purchaseType: 'ONLINE',
-          orderId: order.id,
-        },
-        include: { event: true, ticketType: true },
-      });
-      tickets.push(ticket);
+    let seq = 0;
+    for (const item of items) {
+      for (let i = 0; i < item.quantity; i++) {
+        const ticket = await tx.ticket.create({
+          data: {
+            eventId: event.id,
+            ticketTypeId: item.ticketTypeId,
+            userId: guestUser.id,
+            qrCode: `QR-${Date.now()}-${seq}-${Math.random()}`,
+            purchaseType: 'ONLINE',
+            orderId: order.id,
+          },
+          include: { event: true, ticketType: true },
+        });
+        tickets.push(ticket);
+        seq += 1;
+      }
     }
     return { order, tickets };
   });
 
+  const primaryType = typeById.get(items[0].ticketTypeId)!;
   await sendTicketEmail({
     email: cleanEmail,
     event,
-    ticketType,
+    ticketType: {
+      name: items
+        .map((item) => {
+          const t = typeById.get(item.ticketTypeId);
+          return t ? `${t.name} × ${item.quantity}` : '';
+        })
+        .filter(Boolean)
+        .join(' · '),
+      ticketStyle: primaryType.ticketStyle,
+      accentColor: primaryType.accentColor,
+    },
     tickets: result.tickets,
     totalPrice: fees.chargeAmount || fees.subtotal,
     quantity,
@@ -238,7 +293,7 @@ export async function fulfillTicketCheckout(input: {
     tickets: result.tickets.map((t) => ({
       id: t.id,
       qrCode: t.qrCode,
-      ticketTypeName: t.ticketType?.name || ticketType.name,
+      ticketTypeName: t.ticketType?.name || primaryType.name,
     })),
   }).catch((err) => console.error('[WhatsApp] Ticket delivery failed:', err));
 
@@ -345,6 +400,13 @@ export async function fulfillVendorCheckout(input: {
 
 export function buildFeesForTicket(unitPrice: number, quantity: number, absorbFee: boolean) {
   return calculateUnitOrderFees(unitPrice, quantity, absorbFee);
+}
+
+export function buildFeesForTicketCart(
+  lines: Array<{ unitPrice: number; quantity: number }>,
+  absorbFee: boolean,
+) {
+  return calculateCartOrderFees(lines, absorbFee);
 }
 
 export function buildFeesForVendor(boothFee: number, absorbFee: boolean) {

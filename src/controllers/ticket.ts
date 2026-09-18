@@ -12,11 +12,12 @@ import {
   findUsersByContact,
   countOwnedTickets,
 } from '../services/guestUser';
-import { calculateUnitOrderFees } from '../constants/fees';
+import { calculateCartOrderFees } from '../constants/fees';
 import { assertTicketSalesOpen } from '../services/ticketSales';
 import { writeAuditLog } from '../services/auditLog';
 import { authorizeEventOps } from '../services/eventAccess';
 import { formatDayLong, todayYmd, ymdInZone } from '../services/ticketValidity';
+import { normalizeTicketItems } from '../services/checkoutFulfillment';
 
 const PAID_GATE_METHODS = ['CASH', 'POS', 'TRANSFER'] as const;
 type PaidGateMethod = (typeof PAID_GATE_METHODS)[number];
@@ -812,7 +813,8 @@ export const checkTicketEligibility = async (req: AuthRequest, res: Response) =>
  */
 export const checkoutGuest = async (req: AuthRequest, res: Response) => {
   try {
-    const { firstName, lastName, email, phone, eventId, ticketTypeId, quantity } = req.body;
+    const items = normalizeTicketItems(req.body);
+    const { firstName, lastName, email, phone, eventId } = req.body;
 
     if (!firstName || !isValidName(firstName)) {
       res.status(400).json({ message: 'Invalid first name' });
@@ -828,7 +830,7 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
       res.status(400).json({ message: 'A valid email address is required' });
       return;
     }
-    if (!eventId || !ticketTypeId || !quantity) {
+    if (!eventId || items.length === 0) {
       res.status(400).json({ message: 'Missing required fields for ticket' });
       return;
     }
@@ -842,22 +844,32 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const ticketType = await prisma.ticketType.findUnique({
-      where: { id: Number(ticketTypeId) },
+    const ticketTypes = await prisma.ticketType.findMany({
+      where: { id: { in: items.map((i) => i.ticketTypeId) } },
     });
-    if (!ticketType || ticketType.eventId !== event.id) {
-      res.status(404).json({ message: 'Ticket type not found' });
-      return;
-    }
-    try {
-      assertTicketSalesOpen(ticketType);
-    } catch (err: any) {
-      res.status(err.status || 400).json({ message: err.message, code: err.code });
-      return;
+    const typeById = new Map(ticketTypes.map((t) => [t.id, t]));
+    for (const item of items) {
+      const ticketType = typeById.get(item.ticketTypeId);
+      if (!ticketType || ticketType.eventId !== event.id) {
+        res.status(404).json({ message: 'Ticket type not found' });
+        return;
+      }
+      try {
+        assertTicketSalesOpen(ticketType);
+      } catch (err: any) {
+        res.status(err.status || 400).json({ message: err.message, code: err.code });
+        return;
+      }
     }
 
     const absorbFee = event.organization?.absorbFee ?? false;
-    const fees = calculateUnitOrderFees(ticketType.price, Number(quantity), absorbFee);
+    const fees = calculateCartOrderFees(
+      items.map((item) => ({
+        unitPrice: Number(typeById.get(item.ticketTypeId)?.price || 0),
+        quantity: item.quantity,
+      })),
+      absorbFee,
+    );
 
     if (fees.chargeAmount > 0) {
       res.status(400).json({
@@ -879,8 +891,7 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
         email: cleanEmail,
         phone,
         eventId: Number(eventId),
-        ticketTypeId: Number(ticketTypeId),
-        quantity: Number(quantity),
+        items,
       },
       paymentReference: null,
       fees: {

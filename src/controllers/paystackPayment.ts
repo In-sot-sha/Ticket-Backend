@@ -11,10 +11,11 @@ import {
   verifyPaystackWebhookSignature,
 } from '../services/paystack';
 import {
-  buildFeesForTicket,
+  buildFeesForTicketCart,
   buildFeesForVendor,
   fulfillTicketCheckout,
   fulfillVendorCheckout,
+  normalizeTicketItems,
   TicketCheckoutPayload,
   VendorCheckoutPayload,
 } from '../services/checkoutFulfillment';
@@ -100,8 +101,9 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
     const frontendBase = process.env.FRONTEND_URL || 'http://localhost:5181';
 
     if (kind === 'TICKET') {
-      const { firstName, lastName, email, phone, eventId, ticketTypeId, quantity } = req.body;
-      if (!eventId || !ticketTypeId || !quantity || !email) {
+      const items = normalizeTicketItems(req.body);
+      const { firstName, lastName, email, phone, eventId } = req.body;
+      if (!eventId || items.length === 0 || !email) {
         return res.status(400).json({ message: 'Missing required ticket checkout fields' });
       }
       if (!isValidEmail(String(email).trim())) {
@@ -114,33 +116,43 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
       });
       if (!event) return res.status(404).json({ message: 'Event not found' });
 
-      const ticketType = await prisma.ticketType.findUnique({
-        where: { id: Number(ticketTypeId) },
+      const ticketTypes = await prisma.ticketType.findMany({
+        where: { id: { in: items.map((i) => i.ticketTypeId) } },
       });
-      if (!ticketType || ticketType.eventId !== event.id) {
-        return res.status(404).json({ message: 'Ticket type not found' });
-      }
-      try {
-        assertTicketSalesOpen(ticketType);
-      } catch (err: any) {
-        return res.status(err.status || 400).json({ message: err.message, code: err.code });
+      const typeById = new Map(ticketTypes.map((t) => [t.id, t]));
+      for (const item of items) {
+        const ticketType = typeById.get(item.ticketTypeId);
+        if (!ticketType || ticketType.eventId !== event.id) {
+          return res.status(404).json({ message: 'Ticket type not found' });
+        }
+        try {
+          assertTicketSalesOpen(ticketType);
+        } catch (err: any) {
+          return res.status(err.status || 400).json({ message: err.message, code: err.code });
+        }
       }
 
       const absorbFee = event.organization?.absorbFee ?? false;
-      const fees = buildFeesForTicket(ticketType.price, Number(quantity), absorbFee);
+      const fees = buildFeesForTicketCart(
+        items.map((item) => ({
+          unitPrice: Number(typeById.get(item.ticketTypeId)?.price || 0),
+          quantity: item.quantity,
+        })),
+        absorbFee,
+      );
+
+      const payload: TicketCheckoutPayload = {
+        firstName,
+        lastName,
+        email: String(email).trim().toLowerCase(),
+        phone,
+        eventId: Number(eventId),
+        items,
+      };
 
       // Free checkout — no Paystack
       if (fees.chargeAmount <= 0) {
         const reference = makePaymentReference('FREE', event.id);
-        const payload: TicketCheckoutPayload = {
-          firstName,
-          lastName,
-          email: String(email).trim().toLowerCase(),
-          phone,
-          eventId: Number(eventId),
-          ticketTypeId: Number(ticketTypeId),
-          quantity: Number(quantity),
-        };
         await prisma.paymentIntent.create({
           data: {
             reference,
@@ -167,20 +179,11 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
       }
 
       const reference = makePaymentReference('EVT', event.id);
-      const payload: TicketCheckoutPayload = {
-        firstName,
-        lastName,
-        email: String(email).trim().toLowerCase(),
-        phone,
-        eventId: Number(eventId),
-        ticketTypeId: Number(ticketTypeId),
-        quantity: Number(quantity),
-      };
 
       const amountKobo = Math.round(fees.chargeAmount * 100);
       const subaccount = event.organization?.paystackSubaccountCode || undefined;
       const transactionChargeKobo = Math.round(fees.platformFee * 100);
-      const bearer = absorbFee ? 'subaccount' : 'account';
+      const bearer = absorbFee && fees.subtotal > 0 ? 'subaccount' : 'account';
 
       let accessCode: string | undefined;
       let authorizationUrl: string | undefined;
@@ -193,8 +196,8 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
           metadata: {
             kind: 'TICKET',
             eventId: event.id,
-            ticketTypeId: ticketType.id,
-            quantity: Number(quantity),
+            items,
+            quantity: items.reduce((sum, item) => sum + item.quantity, 0),
             custom_fields: [
               {
                 display_name: 'Customer Name',

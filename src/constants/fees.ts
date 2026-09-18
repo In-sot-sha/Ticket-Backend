@@ -1,7 +1,10 @@
-/** PartyStorm platform fee: 6% per ticket/booth unit, min ₦100, max ₦2,000. */
+/** PartyStorm platform fee: 6% per paid ticket/booth unit, min ₦100, max ₦2,000. */
 export const PLATFORM_FEE_RATE = 0.06;
 export const PLATFORM_FEE_MIN = 100;
 export const PLATFORM_FEE_MAX = 2000;
+
+/** Free / RSVP: 5% of the ₦2,000 cap per unit (₦100), never above the cap. */
+export const FREE_PLATFORM_FEE_RATE = 0.05;
 
 /** Paystack local: 1.5% + ₦100 (flat waived under ₦2,500), capped at ₦2,000. */
 export const PAYSTACK_RATE = 0.015;
@@ -14,7 +17,9 @@ export const PROCESSING_FEE_RATE = PAYSTACK_RATE;
 export const PROCESSING_FEE_FLAT = PAYSTACK_FLAT;
 
 export function platformFeeForUnit(price: number): number {
-  if (price <= 0) return 0;
+  if (price <= 0) {
+    return Math.min(PLATFORM_FEE_MAX, Math.round(PLATFORM_FEE_MAX * FREE_PLATFORM_FEE_RATE));
+  }
   return Math.min(
     PLATFORM_FEE_MAX,
     Math.max(PLATFORM_FEE_MIN, Math.round(price * PLATFORM_FEE_RATE)),
@@ -41,10 +46,67 @@ export type OrderFeeBreakdown = {
   absorbFee: boolean;
 };
 
+const emptyFees = (absorbFee: boolean): OrderFeeBreakdown => ({
+  subtotal: 0,
+  platformFee: 0,
+  processingFee: 0,
+  feeChargedToBuyer: 0,
+  chargeAmount: 0,
+  netAmount: 0,
+  absorbFee,
+});
+
+/**
+ * Cart-level fees from summed face value + per-unit platform fees.
+ * Paystack processing is applied once on the cart (not per line).
+ * Absorb is ignored when there is no ticket revenue (free / RSVP).
+ */
+export function feesFromSubtotalAndPlatform(
+  subtotal: number,
+  platformFee: number,
+  absorbFee: boolean,
+): OrderFeeBreakdown {
+  const safeSubtotal = Math.max(0, Math.round(subtotal));
+  const safePlatform = Math.max(0, Math.round(platformFee));
+  if (safeSubtotal <= 0 && safePlatform <= 0) {
+    return emptyFees(absorbFee);
+  }
+
+  const canAbsorb = absorbFee && safeSubtotal > 0;
+  if (canAbsorb) {
+    const processingFee = Math.round(paystackLocalFee(safeSubtotal));
+    return {
+      subtotal: safeSubtotal,
+      platformFee: safePlatform,
+      processingFee,
+      feeChargedToBuyer: 0,
+      chargeAmount: safeSubtotal,
+      netAmount: Math.max(0, safeSubtotal - safePlatform - processingFee),
+      absorbFee: true,
+    };
+  }
+
+  const base = safeSubtotal + safePlatform;
+  let chargeAmount = base;
+  for (let i = 0; i < 5; i++) {
+    chargeAmount = base + paystackLocalFee(chargeAmount);
+  }
+  chargeAmount = Math.round(chargeAmount);
+  const processingFee = Math.max(0, chargeAmount - base);
+
+  return {
+    subtotal: safeSubtotal,
+    platformFee: safePlatform,
+    processingFee,
+    feeChargedToBuyer: chargeAmount - safeSubtotal,
+    chargeAmount,
+    netAmount: Math.max(0, safeSubtotal - safePlatform),
+    absorbFee: false,
+  };
+}
+
 /**
  * Fee breakdown for a line of identical units (one ticket type × qty, or one booth).
- * Pass-through: buyer pays subtotal + platform + Paystack; organizer nets subtotal − platform.
- * Absorb: buyer pays subtotal; organizer nets subtotal − platform − Paystack.
  */
 export function calculateUnitOrderFees(
   unitPrice: number,
@@ -52,52 +114,27 @@ export function calculateUnitOrderFees(
   absorbFee: boolean,
 ): OrderFeeBreakdown {
   const qty = Math.max(0, Math.floor(quantity));
-  const subtotal = Math.round(unitPrice * qty);
-  if (subtotal <= 0 || qty <= 0) {
-    return {
-      subtotal: 0,
-      platformFee: 0,
-      processingFee: 0,
-      feeChargedToBuyer: 0,
-      chargeAmount: 0,
-      netAmount: 0,
-      absorbFee,
-    };
+  if (qty <= 0) return emptyFees(absorbFee);
+  const subtotal = Math.round(Number(unitPrice) * qty);
+  const platformFee = platformFeeForUnit(Number(unitPrice)) * qty;
+  return feesFromSubtotalAndPlatform(subtotal, platformFee, absorbFee);
+}
+
+/** Combine several ticket lines into one Paystack charge. */
+export function calculateCartOrderFees(
+  lines: Array<{ unitPrice: number; quantity: number }>,
+  absorbFee: boolean,
+): OrderFeeBreakdown {
+  let subtotal = 0;
+  let platformFee = 0;
+  for (const line of lines) {
+    const qty = Math.max(0, Math.floor(Number(line.quantity) || 0));
+    if (qty <= 0) continue;
+    const unit = Number(line.unitPrice) || 0;
+    subtotal += Math.round(unit * qty);
+    platformFee += platformFeeForUnit(unit) * qty;
   }
-
-  const platformFee = platformFeeForUnit(unitPrice) * qty;
-
-  if (absorbFee) {
-    const processingFee = Math.round(paystackLocalFee(subtotal));
-    return {
-      subtotal,
-      platformFee,
-      processingFee,
-      feeChargedToBuyer: 0,
-      chargeAmount: subtotal,
-      netAmount: Math.max(0, subtotal - platformFee - processingFee),
-      absorbFee: true,
-    };
-  }
-
-  const base = subtotal + platformFee;
-  let chargeAmount = base;
-  for (let i = 0; i < 5; i++) {
-    chargeAmount = base + paystackLocalFee(chargeAmount);
-  }
-  chargeAmount = Math.round(chargeAmount);
-  const processingFee = Math.max(0, chargeAmount - base);
-  const feeChargedToBuyer = chargeAmount - subtotal;
-
-  return {
-    subtotal,
-    platformFee,
-    processingFee,
-    feeChargedToBuyer,
-    chargeAmount,
-    netAmount: Math.max(0, subtotal - platformFee),
-    absorbFee: false,
-  };
+  return feesFromSubtotalAndPlatform(subtotal, platformFee, absorbFee);
 }
 
 /**
