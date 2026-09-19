@@ -3,9 +3,6 @@ export const PLATFORM_FEE_RATE = 0.06;
 export const PLATFORM_FEE_MIN = 100;
 export const PLATFORM_FEE_MAX = 2000;
 
-/** Free / RSVP: 5% of the ₦2,000 cap per unit (₦100), never above the cap. */
-export const FREE_PLATFORM_FEE_RATE = 0.05;
-
 /** Paystack local: 1.5% + ₦100 (flat waived under ₦2,500), capped at ₦2,000. */
 export const PAYSTACK_RATE = 0.015;
 export const PAYSTACK_FLAT = 100;
@@ -17,9 +14,7 @@ export const PROCESSING_FEE_RATE = PAYSTACK_RATE;
 export const PROCESSING_FEE_FLAT = PAYSTACK_FLAT;
 
 export function platformFeeForUnit(price: number): number {
-  if (price <= 0) {
-    return Math.min(PLATFORM_FEE_MAX, Math.round(PLATFORM_FEE_MAX * FREE_PLATFORM_FEE_RATE));
-  }
+  if (price <= 0) return 0;
   return Math.min(
     PLATFORM_FEE_MAX,
     Math.max(PLATFORM_FEE_MIN, Math.round(price * PLATFORM_FEE_RATE)),
@@ -59,7 +54,8 @@ const emptyFees = (absorbFee: boolean): OrderFeeBreakdown => ({
 /**
  * Cart-level fees from summed face value + per-unit platform fees.
  * Paystack processing is applied once on the cart (not per line).
- * Absorb is ignored when there is no ticket revenue (free / RSVP).
+ * Absorb: buyer pays face value only; host covers platform + processing from payout.
+ * Free / RSVP lines have ₦0 platform fee.
  */
 export function feesFromSubtotalAndPlatform(
   subtotal: number,

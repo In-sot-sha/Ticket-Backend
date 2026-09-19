@@ -34,7 +34,7 @@ export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
         data: {
           name: businessName,
           description,
-          website: contactInfo,
+          website: contactInfo?.trim() || null,
           logo: logo || existingOrg.logo,
           socials,
           isVerified: false,
@@ -47,7 +47,7 @@ export const becomeOrganizer = async (req: AuthRequest, res: Response) => {
         data: {
           name: businessName,
           description,
-          website: contactInfo,
+          website: contactInfo?.trim() || null,
           logo,
           socials,
           ownerId: req.userId!,
