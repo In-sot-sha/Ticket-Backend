@@ -82,6 +82,15 @@ export const getEventAttendanceTickets = async (req: AuthRequest, res: Response)
         user: ticketSafeUser,
         ticketType: { select: { id: true, name: true, price: true } },
         soldBy: ticketSafeSoldBy,
+        order: {
+          select: {
+            id: true,
+            acceptedTerms: true,
+            acceptedMarketing: true,
+            termsAcceptedAt: true,
+            createdAt: true,
+          },
+        },
       },
       orderBy: { updatedAt: 'desc' }
     });
@@ -814,7 +823,7 @@ export const checkTicketEligibility = async (req: AuthRequest, res: Response) =>
 export const checkoutGuest = async (req: AuthRequest, res: Response) => {
   try {
     const items = normalizeTicketItems(req.body);
-    const { firstName, lastName, email, phone, eventId } = req.body;
+    const { firstName, lastName, email, phone, eventId, acceptedTerms, acceptedMarketing } = req.body;
 
     if (!firstName || !isValidName(firstName)) {
       res.status(400).json({ message: 'Invalid first name' });
@@ -841,6 +850,11 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
     });
     if (!event) {
       res.status(404).json({ message: 'Event not found' });
+      return;
+    }
+
+    if (event.organizerTerms && !acceptedTerms) {
+      res.status(400).json({ message: 'You must agree to the organizer’s terms to continue.' });
       return;
     }
 
@@ -892,6 +906,8 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
         phone,
         eventId: Number(eventId),
         items,
+        acceptedTerms: Boolean(acceptedTerms),
+        acceptedMarketing: Boolean(acceptedMarketing),
       },
       paymentReference: null,
       fees: {

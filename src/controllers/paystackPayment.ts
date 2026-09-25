@@ -19,8 +19,9 @@ import {
   TicketCheckoutPayload,
   VendorCheckoutPayload,
 } from '../services/checkoutFulfillment';
-import { isValidEmail } from '../utils/validation';
+import { isValidEmail, normalizePhone } from '../utils/validation';
 import { assertTicketSalesOpen } from '../services/ticketSales';
+import { assertMaxPerPerson, getMaxPerPerson } from '../services/guestUser';
 
 async function fulfillPaymentIntent(reference: string, paystackStatus?: string) {
   const intent = await prisma.paymentIntent.findUnique({ where: { reference } });
@@ -102,7 +103,7 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
 
     if (kind === 'TICKET') {
       const items = normalizeTicketItems(req.body);
-      const { firstName, lastName, email, phone, eventId } = req.body;
+      const { firstName, lastName, email, phone, eventId, acceptedTerms, acceptedMarketing } = req.body;
       if (!eventId || items.length === 0 || !email) {
         return res.status(400).json({ message: 'Missing required ticket checkout fields' });
       }
@@ -116,10 +117,17 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
       });
       if (!event) return res.status(404).json({ message: 'Event not found' });
 
+      if (event.organizerTerms && !acceptedTerms) {
+        return res.status(400).json({ message: 'You must agree to the organizer’s terms to continue.' });
+      }
+
       const ticketTypes = await prisma.ticketType.findMany({
         where: { id: { in: items.map((i) => i.ticketTypeId) } },
       });
       const typeById = new Map(ticketTypes.map((t) => [t.id, t]));
+      const cleanEmail = email ? String(email).trim().toLowerCase() : null;
+      const cleanPhone = phone ? normalizePhone(String(phone)) : null;
+
       for (const item of items) {
         const ticketType = typeById.get(item.ticketTypeId);
         if (!ticketType || ticketType.eventId !== event.id) {
@@ -129,6 +137,27 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
           assertTicketSalesOpen(ticketType);
         } catch (err: any) {
           return res.status(err.status || 400).json({ message: err.message, code: err.code });
+        }
+
+        const maxPerPerson = getMaxPerPerson(ticketType);
+        try {
+          await assertMaxPerPerson({
+            eventId: event.id,
+            ticketTypeId: item.ticketTypeId,
+            quantity: item.quantity,
+            maxPerPerson,
+            email: cleanEmail,
+            phone: cleanPhone,
+            extraUserIds: req.userId ? [req.userId] : [],
+          });
+        } catch (limitErr: any) {
+          return res.status(400).json({
+            message: limitErr.message || `Maximum ${maxPerPerson} ticket(s) per person.`,
+            code: limitErr.code || 'MAX_PER_PERSON',
+            owned: limitErr.owned,
+            maxPerPerson: limitErr.maxPerPerson,
+            remaining: limitErr.remaining,
+          });
         }
       }
 
@@ -148,6 +177,8 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
         phone,
         eventId: Number(eventId),
         items,
+        acceptedTerms: Boolean(acceptedTerms),
+        acceptedMarketing: Boolean(acceptedMarketing),
       };
 
       // Free checkout — no Paystack

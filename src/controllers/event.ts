@@ -547,6 +547,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       longitude,
       imageUrl: bodyImageUrl,
       vendorSettings, // Added vendorSettings
+      organizerTerms,
     } = req.body;
 
     const parsedTicketTypes = parseJsonField<Array<{
@@ -652,6 +653,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
         onlineUrl: resolvedLocationType === 'online' ? resolvedOnlineUrl : null,
         latitude: latitude ? parseFloat(latitude) : null,
         longitude: longitude ? parseFloat(longitude) : null,
+        organizerTerms: organizerTerms && String(organizerTerms).trim() ? String(organizerTerms).trim() : null,
       }
     });
 
@@ -763,6 +765,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       longitude,
       imageUrl: bodyImageUrl,
       vendorSettings, // Added vendorSettings
+      organizerTerms,
     } = req.body;
 
     const parsedTicketTypes = parseJsonField<Array<{
@@ -875,6 +878,9 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       onlineUrl: resolvedLocationType === 'online' ? resolvedOnlineUrl : null,
       ...(latitude !== undefined && { latitude: latitude ? parseFloat(latitude) : null }),
       ...(longitude !== undefined && { longitude: longitude ? parseFloat(longitude) : null }),
+      ...(organizerTerms !== undefined && {
+        organizerTerms: organizerTerms && String(organizerTerms).trim() ? String(organizerTerms).trim() : null,
+      }),
     };
 
     // If organizationId is provided and different from current, check permissions

@@ -222,6 +222,7 @@ model Event {
   vendorDeadline     DateTime?
   vendorApprovalMode String              @default("auto") // "auto" or "manual"
   refundPolicy       String?             @db.Text
+  organizerTerms     String?             @db.Text
   socialLinks        Json?
   gateTicketing      Boolean             @default(false) // Allow gate ticketing
   vendorTypes        VendorType[] // Support multiple vendor types per event
@@ -257,6 +258,9 @@ model Order {
   paymentReference String?       @unique
   status           PaymentStatus @default(PENDING)
   purchaseType     PurchaseType  @default(ONLINE)
+  acceptedTerms    Boolean       @default(false)
+  acceptedMarketing Boolean      @default(false)
+  termsAcceptedAt  DateTime?
   createdAt        DateTime      @default(now())
 
   // Relations

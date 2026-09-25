@@ -20,6 +20,8 @@ export type TicketCheckoutPayload = {
   phone?: string | null;
   eventId: number;
   items?: TicketLineItem[];
+  acceptedTerms?: boolean;
+  acceptedMarketing?: boolean;
   /** @deprecated Prefer items. Kept so older intents still fulfill. */
   ticketTypeId?: number;
   quantity?: number;
@@ -238,6 +240,9 @@ export async function fulfillTicketCheckout(input: {
         paymentReference: paymentReference || undefined,
         status: 'PAID',
         purchaseType: 'ONLINE',
+        acceptedTerms: Boolean(payload.acceptedTerms),
+        acceptedMarketing: Boolean(payload.acceptedMarketing),
+        termsAcceptedAt: (payload.acceptedTerms || payload.acceptedMarketing) ? new Date() : null,
       },
     });
 
