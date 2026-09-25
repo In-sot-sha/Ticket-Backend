@@ -127,6 +127,44 @@ export async function resolveBankCode(bankName: string): Promise<string | null> 
   return partial?.code ?? null;
 }
 
+export async function resolvePaystackAccount(
+  accountNumber: string,
+  bankCode: string,
+): Promise<{ accountName: string; accountNumber: string }> {
+  const cleanAccount = accountNumber.trim();
+  const cleanCode = bankCode.trim();
+
+  // Paystack NUBAN Account Resolution API (Free of charge)
+  const result = await paystackFetch<{ account_name: string; account_number: string }>(
+    `/bank/resolve?account_number=${encodeURIComponent(cleanAccount)}&bank_code=${encodeURIComponent(cleanCode)}`,
+  );
+
+  if (result.ok && result.data?.account_name) {
+    return {
+      accountName: result.data.account_name,
+      accountNumber: result.data.account_number || cleanAccount,
+    };
+  }
+
+  // Graceful fallback for test mode if live rate limit reached
+  const isTestKey = (process.env.PAYSTACK_SECRET_KEY || '').startsWith('sk_test_');
+  if (isTestKey && cleanAccount.length === 10) {
+    if (cleanCode !== '001') {
+      const testRes = await paystackFetch<{ account_name: string; account_number: string }>(
+        `/bank/resolve?account_number=${encodeURIComponent(cleanAccount)}&bank_code=001`,
+      );
+      if (testRes.ok && testRes.data?.account_name) {
+        return {
+          accountName: testRes.data.account_name,
+          accountNumber: cleanAccount,
+        };
+      }
+    }
+  }
+
+  throw new Error(result.message || 'Could not verify account name. Check account number and bank.');
+}
+
 export async function createOrUpdatePaystackSubaccount(input: {
   businessName: string;
   settlementBank: string;

@@ -8,6 +8,7 @@ import {
   getVendorApplications,
   getMyVendorApplications,
   getBanks,
+  resolveBankAccount,
 } from '../controllers/userRole';
 import { verifyToken } from '../middleware/auth';
 import { upload } from '../utils/upload';
@@ -19,6 +20,7 @@ router.post('/become-organizer', verifyToken, becomeOrganizer);
 router.post('/upload-logo', verifyToken, upload.single('logo'), uploadOrgLogo);
 router.post('/become-vendor', verifyToken, becomeVendor);
 router.get('/banks', verifyToken, getBanks);
+router.get('/resolve-bank-account', verifyToken, resolveBankAccount);
 
 
 // Organizer profile endpoints

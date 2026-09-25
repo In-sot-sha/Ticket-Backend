@@ -92,7 +92,13 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
             },
           },
           tickets: {
-            select: { id: true, ticketType: { select: { name: true } } },
+            select: {
+              id: true,
+              qrCode: true,
+              status: true,
+              amountPaid: true,
+              ticketType: { select: { id: true, name: true, price: true } },
+            },
           },
           _count: { select: { tickets: true } },
         },
@@ -132,6 +138,8 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
       netAmount: o.netAmount,
       status: o.status,
       purchaseType: o.purchaseType,
+      paymentReference: o.paymentReference,
+      tickets: o.tickets || [],
       createdAt: o.createdAt,
       detail: `${o._count.tickets} ticket${o._count.tickets !== 1 ? 's' : ''}`,
       buyer: o.user
@@ -156,6 +164,9 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
       netAmount: v.netAmount ?? 0,
       status: v.paymentStatus,
       purchaseType: 'ONLINE',
+      paymentReference: v.paymentReference,
+      vendorType: v.vendorType?.name ?? null,
+      tickets: [],
       createdAt: v.appliedAt,
       detail: `Vendor Booth (${v.vendorType?.name ?? 'General'})`,
       buyer: v.user
@@ -743,9 +754,18 @@ export const getAdminEvents = async (req: AuthRequest, res: Response) => {
         organization: {
           select: { id: true, name: true },
         },
-        opsProjects: {
-          select: { id: true, title: true, status: true },
-          take: 5,
+        ticketTypes: {
+          select: {
+            id: true,
+            name: true,
+            price: true,
+            quantity: true,
+            isPaused: true,
+            _count: { select: { tickets: true } },
+          },
+        },
+        _count: {
+          select: { tickets: true, orders: true },
         },
       },
       orderBy: { createdAt: 'desc' },

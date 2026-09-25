@@ -398,3 +398,41 @@ export const getBanks = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * Resolve NUBAN account name using Paystack's free bank resolution API.
+ */
+export const resolveBankAccount = async (req: AuthRequest, res: Response) => {
+  try {
+    const { accountNumber, bankCode, bankName } = req.query;
+    const cleanAccount = String(accountNumber || '').trim().replace(/\D/g, '');
+
+    if (!cleanAccount || cleanAccount.length !== 10) {
+      return res.status(400).json({ message: 'A valid 10-digit NUBAN account number is required' });
+    }
+
+    let code = bankCode ? String(bankCode).trim() : null;
+    if (!code && bankName) {
+      const { resolveBankCode } = await import('../services/paystack');
+      code = await resolveBankCode(String(bankName));
+    }
+
+    if (!code) {
+      return res.status(400).json({ message: 'Please select a valid bank' });
+    }
+
+    const { resolvePaystackAccount } = await import('../services/paystack');
+    const result = await resolvePaystackAccount(cleanAccount, code);
+
+    return res.json({
+      success: true,
+      accountName: result.accountName,
+      accountNumber: result.accountNumber,
+    });
+  } catch (error: any) {
+    console.warn('[ResolveBankAccount] Failed to resolve:', error.message);
+    return res.status(400).json({
+      message: error.message || 'Could not verify account name. Check account number and bank.',
+    });
+  }
+};
+
