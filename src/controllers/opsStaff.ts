@@ -58,6 +58,23 @@ export const listStaff = async (_req: AuthRequest, res: Response) => {
         staffOrgCoverages: {
           include: { organization: { select: { id: true, name: true } } },
         },
+        staffProjectAssignments: {
+          include: {
+            project: {
+              include: {
+                event: {
+                  select: {
+                    id: true,
+                    title: true,
+                    startDate: true,
+                    location: true,
+                    organization: { select: { id: true, name: true } },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
       orderBy: { updatedAt: 'desc' },
     });
@@ -79,6 +96,9 @@ export const createStaff = async (req: AuthRequest, res: Response) => {
       password,
       capabilities,
       active = true,
+      eventId,
+      eventIds,
+      assignAllEvents,
       organizationIds,
       sendInvite = true,
     } = req.body;
@@ -86,6 +106,17 @@ export const createStaff = async (req: AuthRequest, res: Response) => {
     if (!email?.trim() || !firstName?.trim() || !lastName?.trim()) {
       res.status(400).json({ message: 'email, firstName, and lastName are required' });
       return;
+    }
+
+    let assignedEventIds: number[] = [];
+    if (assignAllEvents || eventId === 'all' || eventIds === 'all') {
+      const allEvents = await prisma.event.findMany({ select: { id: true } });
+      assignedEventIds = allEvents.map((e) => e.id);
+    } else {
+      assignedEventIds = [
+        ...(eventId && eventId !== 'none' ? [Number(eventId)] : []),
+        ...(Array.isArray(eventIds) ? eventIds.map(Number) : []),
+      ].filter(Boolean);
     }
 
     const normalizedEmail = String(email).trim().toLowerCase();
@@ -111,6 +142,31 @@ export const createStaff = async (req: AuthRequest, res: Response) => {
           create: { userId: existing.id, organizationId },
           update: {},
         });
+      }
+
+      for (const evId of assignedEventIds) {
+        const ev = await prisma.event.findUnique({ where: { id: evId } });
+        if (ev) {
+          let project = await prisma.opsProject.findFirst({
+            where: { eventId: evId, status: { not: 'CLOSED' } },
+          });
+          if (!project) {
+            project = await prisma.opsProject.create({
+              data: {
+                title: `${ev.title} Gate Operations`,
+                eventId: ev.id,
+                organizationId: ev.organizationId,
+                status: 'LINKED',
+                services: caps,
+              },
+            });
+          }
+          await prisma.staffProjectAssignment.upsert({
+            where: { projectId_userId: { projectId: project.id, userId: existing.id } },
+            create: { projectId: project.id, userId: existing.id },
+            update: {},
+          });
+        }
       }
 
       let inviteSent = false;
@@ -173,6 +229,31 @@ export const createStaff = async (req: AuthRequest, res: Response) => {
       await prisma.staffOrgCoverage.create({
         data: { userId: user.id, organizationId },
       });
+    }
+
+    for (const evId of assignedEventIds) {
+      const ev = await prisma.event.findUnique({ where: { id: evId } });
+      if (ev) {
+        let project = await prisma.opsProject.findFirst({
+          where: { eventId: evId, status: { not: 'CLOSED' } },
+        });
+        if (!project) {
+          project = await prisma.opsProject.create({
+            data: {
+              title: `${ev.title} Gate Operations`,
+              eventId: ev.id,
+              organizationId: ev.organizationId,
+              status: 'LINKED',
+              services: caps,
+            },
+          });
+        }
+        await prisma.staffProjectAssignment.upsert({
+          where: { projectId_userId: { projectId: project.id, userId: user.id } },
+          create: { projectId: project.id, userId: user.id },
+          update: {},
+        });
+      }
     }
 
     let inviteSent = false;
@@ -330,6 +411,107 @@ export const removeOrgCoverage = async (req: AuthRequest, res: Response) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: 'Failed to remove coverage' });
+  }
+};
+
+/** Admin: assign staff directly to an event or all events */
+export const assignStaffToEvent = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = Number(req.params.userId);
+    const { eventId, eventIds, assignAllEvents, capabilitiesOverride } = req.body;
+    if (!userId) {
+      res.status(400).json({ message: 'userId is required' });
+      return;
+    }
+
+    let targetEventIds: number[] = [];
+    if (assignAllEvents || eventId === 'all' || eventIds === 'all') {
+      const allEvents = await prisma.event.findMany({ select: { id: true } });
+      targetEventIds = allEvents.map((e) => e.id);
+    } else {
+      targetEventIds = [
+        ...(eventId && eventId !== 'none' ? [Number(eventId)] : []),
+        ...(Array.isArray(eventIds) ? eventIds.map(Number) : []),
+      ].filter(Boolean);
+    }
+
+    if (targetEventIds.length === 0) {
+      res.status(400).json({ message: 'No event specified' });
+      return;
+    }
+
+    for (const evId of targetEventIds) {
+      const event = await prisma.event.findUnique({ where: { id: evId } });
+      if (!event) continue;
+
+      let project = await prisma.opsProject.findFirst({
+        where: { eventId: evId, status: { not: 'CLOSED' } },
+      });
+      if (!project) {
+        project = await prisma.opsProject.create({
+          data: {
+            title: `${event.title} Gate Operations`,
+            eventId: event.id,
+            organizationId: event.organizationId,
+            status: 'LINKED',
+            services: stringifyCaps(['SCAN', 'CHECK_IN', 'WALK_IN_SALE']),
+          },
+        });
+      }
+
+      await prisma.staffProjectAssignment.upsert({
+        where: { projectId_userId: { projectId: project.id, userId } },
+        create: {
+          projectId: project.id,
+          userId,
+          capabilitiesOverride: capabilitiesOverride ? stringifyCaps(capabilitiesOverride) : null,
+        },
+        update: {
+          capabilitiesOverride: capabilitiesOverride ? stringifyCaps(capabilitiesOverride) : null,
+        },
+      });
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { isStaff: true },
+    });
+    await prisma.staffProfile.upsert({
+      where: { userId },
+      create: {
+        userId,
+        capabilities: stringifyCaps(DEFAULT_CAPS),
+        active: true,
+      },
+      update: {},
+    });
+
+    res.json({ message: 'Staff assigned to event(s) successfully' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: 'Failed to assign staff to event' });
+  }
+};
+
+/** Admin: remove staff from an event */
+export const removeStaffFromEvent = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = Number(req.params.userId);
+    const eventId = Number(req.params.eventId);
+    const projects = await prisma.opsProject.findMany({
+      where: { eventId },
+      select: { id: true },
+    });
+    const projectIds = projects.map((p) => p.id);
+    if (projectIds.length > 0) {
+      await prisma.staffProjectAssignment.deleteMany({
+        where: { userId, projectId: { in: projectIds } },
+      });
+    }
+    res.json({ message: 'Staff removed from event' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: 'Failed to remove staff from event' });
   }
 };
 

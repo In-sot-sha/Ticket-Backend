@@ -145,19 +145,48 @@ async function buildEventStats(
       .filter((r: any) => r.ticketTypeId === ticketTypeId && statuses.includes(r.status))
       .reduce((sum: number, r: any) => sum + r._count.id, 0);
 
+  // Tickets checked in via TicketCheckIn table
+  const checkInRows = await prisma.ticketCheckIn.findMany({
+    where: { ticket: { eventId } },
+    select: {
+      ticketId: true,
+      ticket: { select: { ticketTypeId: true } },
+    },
+    distinct: ['ticketId'],
+  });
+
+  const checkInTicketIdSet = new Set<number>(checkInRows.map((r) => r.ticketId));
+  const checkInsByTypeId = new Map<number, number>();
+  for (const r of checkInRows) {
+    const tid = r.ticket.ticketTypeId;
+    checkInsByTypeId.set(tid, (checkInsByTypeId.get(tid) || 0) + 1);
+  }
+
+  // Also include any tickets with status === 'USED' that might not be in TicketCheckIn table (legacy)
+  const legacyUsedTickets = await prisma.ticket.findMany({
+    where: {
+      eventId,
+      status: 'USED',
+      id: checkInTicketIdSet.size > 0 ? { notIn: Array.from(checkInTicketIdSet) } : undefined,
+    },
+    select: { id: true, ticketTypeId: true },
+  });
+  for (const t of legacyUsedTickets) {
+    checkInTicketIdSet.add(t.id);
+    checkInsByTypeId.set(t.ticketTypeId, (checkInsByTypeId.get(t.ticketTypeId) || 0) + 1);
+  }
+
   let ticketsSold = 0;
-  let ticketsCheckedIn = 0;
   let actualRevenue = 0;
   let expectedRevenue = 0;
   let ticketInventory = 0;
 
   const ticketTypeStats = ticketTypes.map((tt: any) => {
     const sold = countFor(tt.id, ['VALID', 'USED']);
-    const checkedIn = countFor(tt.id, ['USED']);
+    const checkedIn = checkInsByTypeId.get(tt.id) || 0;
     const revenue = tt.price * sold;
     const expected = tt.price * (tt.quantity ?? 0);
     ticketsSold += sold;
-    ticketsCheckedIn += checkedIn;
     actualRevenue += revenue;
     expectedRevenue += expected;
     ticketInventory += tt.quantity ?? 0;
@@ -173,6 +202,7 @@ async function buildEventStats(
     };
   });
 
+  const ticketsCheckedIn = checkInTicketIdSet.size;
   const capacity = eventCapacity ?? ticketInventory;
 
   return {

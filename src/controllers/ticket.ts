@@ -80,8 +80,18 @@ export const getEventAttendanceTickets = async (req: AuthRequest, res: Response)
       },
       include: {
         user: ticketSafeUser,
-        ticketType: { select: { id: true, name: true, price: true } },
+        ticketType: { select: { id: true, name: true, price: true, validOn: true } },
         soldBy: ticketSafeSoldBy,
+        event: { select: { id: true, startDate: true, endDate: true } },
+        checkIns: {
+          select: {
+            id: true,
+            eventDay: true,
+            scannedBy: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'asc' },
+        },
         order: {
           select: {
             id: true,
@@ -1109,6 +1119,20 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
           include: { event: true, ticketType: true, user: ticketSafeUser, soldBy: ticketSafeSoldBy }
         });
         tickets.push(ticket);
+
+        if (checkInNow) {
+          try {
+            await prisma.ticketCheckIn.create({
+              data: {
+                ticketId: ticket.id,
+                eventDay: todayYmd(),
+                scannedBy: req.userId ?? null,
+              },
+            });
+          } catch (ciErr) {
+            console.error('Failed to create manual ticket checkin record:', ciErr);
+          }
+        }
         
         const notifyEmail = att.email?.trim() || guestUser.email;
         if (notifyEmail) {
@@ -1196,6 +1220,20 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
           include: { event: true, ticketType: true, user: ticketSafeUser, soldBy: ticketSafeSoldBy }
         });
         tickets.push(ticket);
+
+        if (checkInNow) {
+          try {
+            await prisma.ticketCheckIn.create({
+              data: {
+                ticketId: ticket.id,
+                eventDay: todayYmd(),
+                scannedBy: req.userId ?? null,
+              },
+            });
+          } catch (ciErr) {
+            console.error('Failed to create manual bulk ticket checkin record:', ciErr);
+          }
+        }
       }
       
       const notifyEmail = buyerEmail?.trim() || guestUser.email;

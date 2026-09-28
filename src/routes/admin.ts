@@ -35,6 +35,8 @@ import {
   upsertStaff,
   addOrgCoverage,
   removeOrgCoverage,
+  assignStaffToEvent,
+  removeStaffFromEvent,
   listOpsProjects,
   createOpsProject,
   updateOpsProject,
@@ -79,6 +81,8 @@ router.post('/staff/:userId/invite', resendStaffInvite);
 router.put('/staff/:userId', upsertStaff);
 router.post('/staff/:userId/org-coverage', addOrgCoverage);
 router.delete('/staff/:userId/org-coverage/:organizationId', removeOrgCoverage);
+router.post('/staff/:userId/events', assignStaffToEvent);
+router.delete('/staff/:userId/events/:eventId', removeStaffFromEvent);
 
 router.get('/ops-projects', listOpsProjects);
 router.post('/ops-projects', createOpsProject);

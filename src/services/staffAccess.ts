@@ -92,15 +92,6 @@ export async function resolveStaffAccess(
   let allowed = false;
   let caps = [...baseCaps];
 
-  const orgCoverage = await prisma.staffOrgCoverage.findFirst({
-    where: { userId, organizationId: event.organizationId },
-  });
-  if (orgCoverage) {
-    allowed = true;
-    const override = parseCaps(orgCoverage.capabilitiesOverride);
-    if (override.length) caps = [...new Set([...caps, ...override])];
-  }
-
   const projectAssignments = await prisma.staffProjectAssignment.findMany({
     where: { userId },
     include: { project: true },
@@ -111,18 +102,7 @@ export async function resolveStaffAccess(
     if (p.status === 'CLOSED') continue;
 
     const linked = p.eventId === eventId;
-    const orgMatch =
-      p.organizationId === event.organizationId &&
-      (p.status === 'ACTIVE' || p.status === 'LINKED');
-
-    let inWindow = true;
-    if (p.windowStart || p.windowEnd) {
-      const t = event.startDate.getTime();
-      if (p.windowStart && t < p.windowStart.getTime()) inWindow = false;
-      if (p.windowEnd && t > p.windowEnd.getTime()) inWindow = false;
-    }
-
-    if (linked || (orgMatch && inWindow)) {
+    if (linked) {
       allowed = true;
       const override = parseCaps(assignment.capabilitiesOverride);
       if (override.length) caps = [...new Set([...caps, ...override])];
@@ -130,7 +110,7 @@ export async function resolveStaffAccess(
   }
 
   if (!allowed) {
-    return { allowed: false, capabilities: [], reason: 'No coverage for this event' };
+    return { allowed: false, capabilities: [], reason: 'No assignment for this event' };
   }
 
   return { allowed: true, capabilities: caps.length ? caps : baseCaps };
@@ -193,32 +173,9 @@ export async function getStaffHome(userId: number) {
     .map((a) => a.project)
     .filter((p) => p.status !== 'CLOSED');
 
-  const orgIds = orgCoverage.map((c) => c.organizationId);
   const linkedEventIds = projects.map((p) => p.eventId).filter(Boolean) as number[];
 
-  const eventsFromOrgs =
-    orgIds.length > 0
-      ? await prisma.event.findMany({
-          where: {
-            organizationId: { in: orgIds },
-            endDate: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-          },
-          select: {
-            id: true,
-            title: true,
-            slug: true,
-            startDate: true,
-            endDate: true,
-            location: true,
-            organizationId: true,
-            organization: { select: { id: true, name: true } },
-          },
-          orderBy: { startDate: 'asc' },
-          take: 100,
-        })
-      : [];
-
-  const eventsFromProjects =
+  const events =
     linkedEventIds.length > 0
       ? await prisma.event.findMany({
           where: { id: { in: linkedEventIds } },
@@ -232,17 +189,13 @@ export async function getStaffHome(userId: number) {
             organizationId: true,
             organization: { select: { id: true, name: true } },
           },
+          orderBy: { startDate: 'asc' },
         })
       : [];
-
-  const eventMap = new Map<number, (typeof eventsFromOrgs)[0]>();
-  [...eventsFromOrgs, ...eventsFromProjects].forEach((e) => eventMap.set(e.id, e));
-  const events = Array.from(eventMap.values());
 
   const allOrgIds = [
     ...new Set(
       [
-        ...orgIds,
         ...events.map((e) => e.organizationId).filter(Boolean),
         ...projects.map((p) => p.organizationId).filter(Boolean),
       ].filter(Boolean) as number[]
@@ -358,25 +311,8 @@ export async function getStaffHome(userId: number) {
       capabilities: caps,
       active: user.staffProfile.active,
     },
-    orgCoverage: orgCoverage.map((c) => ({
-      organizationId: c.organizationId,
-      organizationName: c.organization.name,
-      gatePinCount: pinCountByOrg.get(c.organizationId) || 0,
-    })),
-    projects: projects.map((p) => ({
-      id: p.id,
-      title: p.title,
-      status: p.status,
-      eventId: p.eventId,
-      eventTitle: p.event?.title,
-      organizationId: p.organizationId,
-      organizationName: p.organization?.name,
-      services: parseCaps(p.services),
-      assignedStaff: (p.assignments || []).map((a) => ({
-        id: a.user.id,
-        name: `${a.user.firstName} ${a.user.lastName}`.trim(),
-      })),
-    })),
+    orgCoverage: [],
+    projects: [],
     events: enrichedEvents,
     todayGates,
   };
