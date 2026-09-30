@@ -3,7 +3,7 @@ import nodemailer from 'nodemailer';
 // ── Config ───────────────────────────────────────────────────────────────────
 
 const SITE_URL = (process.env.FRONTEND_URL || 'https://partystorm.ng').replace(/\/$/, '');
-const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@partystorm.ng';
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'partystormevents@gmail.com';
 const DEFAULT_FROM =
   process.env.EMAIL_FROM || `PartyStorm <noreply@partystorm.ng>`;
 

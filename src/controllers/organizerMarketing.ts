@@ -429,7 +429,7 @@ export const requestEventPromotion = async (req: AuthRequest, res: Response) => 
 
     // Notify support inbox (best-effort)
     try {
-      const support = process.env.SUPPORT_EMAIL || 'support@partystorm.ng';
+      const support = process.env.SUPPORT_EMAIL || 'aii07038713563@gmail.com';
       await sendEmail({
         to: support,
         subject: `Promotion request: ${event.title}`,
