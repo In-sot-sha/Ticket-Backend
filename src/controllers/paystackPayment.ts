@@ -418,8 +418,14 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
   } catch (error: any) {
     console.error('[Paystack Initialize]', error);
     const status = error.status || 500;
+    let message = error.message || 'Failed to initialize payment';
+    if (error?.code === 'P2002') {
+      message = 'An account with this phone number or email already exists.';
+    } else if (typeof message === 'string' && (message.includes('prisma.') || message.includes('invocation:'))) {
+      message = 'Could not complete ticket reservation. Please check your details and try again.';
+    }
     return res.status(status).json({
-      message: error.message || 'Failed to initialize payment',
+      message,
       code: error.code,
       owned: error.owned,
       maxPerPerson: error.maxPerPerson,

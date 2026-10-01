@@ -6,7 +6,7 @@ import { prisma } from '../prisma';
 import { generateToken, AuthRequest } from '../middleware/auth';
 import { hashPassword, comparePassword } from '../utils/password';
 import { uploadAvatarImage } from '../utils/imageUpload';
-import { sendEmail, generateWelcomeEmail } from '../services/email';
+import { sendEmail, generateWelcomeEmail, generatePasswordResetEmail } from '../services/email';
 import { isValidEmail, isValidName, normalizePhone } from '../utils/validation';
 import { findUserByIdentifier } from '../services/guestUser';
 
@@ -322,6 +322,143 @@ export const changePassword = async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/**
+ * Request password reset email
+ * Public endpoint: POST /api/users/forgot-password
+ */
+export const forgotPassword = async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+    if (!isValidEmail(cleanEmail)) {
+      return res.status(400).json({ message: 'Please provide a valid email address' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: cleanEmail },
+    });
+
+    // For privacy & security, respond with generic success even if user not found
+    if (!user || !user.email) {
+      return res.json({
+        success: true,
+        message: 'If an account exists with this email, a password reset link has been sent.',
+      });
+    }
+
+    // If account has no password (e.g. social login only)
+    if (!user.password) {
+      return res.status(400).json({
+        message: 'This account uses Google Sign-In and does not have a password. Please sign in with Google.',
+      });
+    }
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({ message: 'Server configuration error' });
+    }
+
+    // Token is signed with JWT_SECRET + user's current password hash.
+    // As soon as the password changes, this token becomes invalid automatically.
+    const resetSecret = secret + user.password;
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, type: 'pwd-reset' },
+      resetSecret,
+      { expiresIn: '1h' }
+    );
+
+    const frontendBase = (process.env.FRONTEND_URL || 'https://partystorm.ng').replace(/\/$/, '');
+    const resetLink = `${frontendBase}/reset-password?token=${encodeURIComponent(token)}`;
+
+    const emailContent = generatePasswordResetEmail(user.email, resetLink, 1);
+    await sendEmail({
+      to: user.email,
+      subject: emailContent.subject,
+      html: emailContent.html,
+      text: emailContent.text,
+    });
+
+    return res.json({
+      success: true,
+      message: 'If an account exists with this email, a password reset link has been sent.',
+    });
+  } catch (error) {
+    console.error('[forgotPassword] Error:', error);
+    return res.status(500).json({ message: 'Failed to process password reset request' });
+  }
+};
+
+/**
+ * Reset password with token
+ * Public endpoint: POST /api/users/reset-password
+ */
+export const resetPassword = async (req: Request, res: Response) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) {
+      return res.status(400).json({ message: 'Token and new password are required' });
+    }
+
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters long' });
+    }
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({ message: 'Server configuration error' });
+    }
+
+    let decoded: any;
+    try {
+      decoded = jwt.decode(token);
+    } catch {
+      return res.status(400).json({ message: 'Invalid or malformed reset token' });
+    }
+
+    if (!decoded || !decoded.userId || decoded.type !== 'pwd-reset') {
+      return res.status(400).json({ message: 'Invalid reset token' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+    });
+
+    if (!user || !user.password) {
+      return res.status(400).json({ message: 'User not found or ineligible for password reset' });
+    }
+
+    try {
+      jwt.verify(token, secret + user.password);
+    } catch (err: any) {
+      if (err.name === 'TokenExpiredError') {
+        return res.status(400).json({ message: 'This password reset link has expired. Please request a new one.' });
+      }
+      return res.status(400).json({ message: 'This password reset link is invalid or has already been used.' });
+    }
+
+    const hashedPassword = await hashPassword(newPassword);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        mustChangePassword: false,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Your password has been reset successfully. You can now log in.',
+    });
+  } catch (error) {
+    console.error('[resetPassword] Error:', error);
+    return res.status(500).json({ message: 'Failed to reset password' });
   }
 };
 

@@ -193,10 +193,14 @@ export async function fulfillTicketCheckout(input: {
   });
 
   if (guestUser.firstName === 'Guest' || !guestUser.firstName) {
-    guestUser = await prisma.user.update({
-      where: { id: guestUser.id },
-      data: { firstName: sanitizedFirstName, lastName: sanitizedLastName },
-    });
+    try {
+      guestUser = await prisma.user.update({
+        where: { id: guestUser.id },
+        data: { firstName: sanitizedFirstName, lastName: sanitizedLastName },
+      });
+    } catch (nameErr) {
+      console.warn('[fulfillTicketCheckout] Non-fatal name update warning:', nameErr);
+    }
   }
 
   const quantity = items.reduce((sum, item) => sum + item.quantity, 0);

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { register, login, getProfile, updateProfile, uploadAvatar, googleLogin, refreshToken, changePassword } from '../controllers/user';
+import { register, login, getProfile, updateProfile, uploadAvatar, googleLogin, refreshToken, changePassword, forgotPassword, resetPassword } from '../controllers/user';
 import { verifyToken } from '../middleware/auth';
 import { upload } from '../utils/upload';
 
@@ -10,6 +10,8 @@ router.post('/register', register);
 router.post('/login', login);
 router.post('/google-login', googleLogin);
 router.post('/refresh-token', refreshToken); // Does NOT require verifyToken - accepts expired tokens
+router.post('/forgot-password', forgotPassword);
+router.post('/reset-password', resetPassword);
 
 // Protected routes
 router.get('/profile', verifyToken, getProfile);

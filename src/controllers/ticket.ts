@@ -938,8 +938,12 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
   } catch (error: any) {
     console.error('Error during guest checkout:', error);
     if (error.status) {
+      let msg = error.message;
+      if (typeof msg === 'string' && (msg.includes('prisma.') || msg.includes('invocation:'))) {
+        msg = 'Could not complete checkout. Please verify your details and try again.';
+      }
       res.status(error.status).json({
-        message: error.message,
+        message: msg,
         code: error.code,
         owned: error.owned,
         maxPerPerson: error.maxPerPerson,

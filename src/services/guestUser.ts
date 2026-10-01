@@ -96,30 +96,117 @@ export const getOrCreateGuestUser = async ({ name, email, phone }: GuestContact)
   const firstName = nameParts[0] || 'Guest';
   const lastName = nameParts.slice(1).join(' ') || 'Guest';
 
-  let user =
-    (cleanEmail ? await prisma.user.findUnique({ where: { email: cleanEmail } }) : null) ||
-    (cleanPhone ? await prisma.user.findUnique({ where: { phone: cleanPhone } }) : null);
+  // Find users by email and phone independently to detect multi-account collisions
+  const userByEmail = cleanEmail ? await prisma.user.findUnique({ where: { email: cleanEmail } }) : null;
+  const userByPhone = cleanPhone ? await prisma.user.findUnique({ where: { phone: cleanPhone } }) : null;
 
-  if (user) {
-    const updates: { phone?: string; email?: string; firstName?: string; lastName?: string } = {};
-    if (cleanPhone && !user.phone) updates.phone = cleanPhone;
-    if (cleanEmail && !user.email) updates.email = cleanEmail;
+  // 1. If a user exists with this email, prioritize it for ticket checkout
+  if (userByEmail) {
+    let user = userByEmail;
+    const updates: { phone?: string; firstName?: string; lastName?: string } = {};
+
+    // Only update phone if this user doesn't already have one AND cleanPhone is not owned by a different user
+    if (cleanPhone && !user.phone) {
+      if (!userByPhone || userByPhone.id === user.id) {
+        updates.phone = cleanPhone;
+      } else if (userByPhone.isGuest && !user.isGuest) {
+        // If the other account is just an old guest record and current user is registered,
+        // release the phone from the old guest record
+        try {
+          await prisma.user.update({
+            where: { id: userByPhone.id },
+            data: { phone: null },
+          });
+          updates.phone = cleanPhone;
+        } catch {
+          // If clearing fails, leave phone alone on userByEmail
+        }
+      }
+    }
+
+    if ((user.firstName === 'Guest' || !user.firstName) && firstName !== 'Guest') {
+      updates.firstName = firstName;
+      updates.lastName = lastName;
+    }
+
     if (Object.keys(updates).length > 0) {
-      user = await prisma.user.update({ where: { id: user.id }, data: updates });
+      try {
+        user = await prisma.user.update({ where: { id: user.id }, data: updates });
+      } catch (err: any) {
+        if (err?.code === 'P2002') {
+          console.warn(`[getOrCreateGuestUser] Ignored P2002 on user ${user.id} update:`, err.message);
+        } else {
+          throw err;
+        }
+      }
     }
     return user;
   }
 
-  return prisma.user.create({
-    data: {
-      email: cleanEmail,
-      phone: cleanPhone,
-      firstName,
-      lastName,
-      isGuest: true,
-      role: 'USER',
-    },
-  });
+  // 2. If a user exists with this phone (and no user with cleanEmail)
+  if (userByPhone) {
+    let user = userByPhone;
+    const updates: { email?: string; firstName?: string; lastName?: string } = {};
+
+    if (cleanEmail && !user.email) {
+      updates.email = cleanEmail;
+    }
+
+    if ((user.firstName === 'Guest' || !user.firstName) && firstName !== 'Guest') {
+      updates.firstName = firstName;
+      updates.lastName = lastName;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      try {
+        user = await prisma.user.update({ where: { id: user.id }, data: updates });
+      } catch (err: any) {
+        if (err?.code === 'P2002') {
+          console.warn(`[getOrCreateGuestUser] Ignored P2002 on user ${user.id} update:`, err.message);
+        } else {
+          throw err;
+        }
+      }
+    }
+    return user;
+  }
+
+  // 3. Neither email nor phone matched any existing user: create new guest
+  try {
+    return await prisma.user.create({
+      data: {
+        email: cleanEmail,
+        phone: cleanPhone,
+        firstName,
+        lastName,
+        isGuest: true,
+        role: 'USER',
+      },
+    });
+  } catch (err: any) {
+    if (err?.code === 'P2002') {
+      // Race condition or conflict: fetch whichever exists now
+      const existing =
+        (cleanEmail ? await prisma.user.findUnique({ where: { email: cleanEmail } }) : null) ||
+        (cleanPhone ? await prisma.user.findUnique({ where: { phone: cleanPhone } }) : null);
+      if (existing) return existing;
+
+      // If phone conflicted with someone else, create guest with email only so checkout succeeds
+      if (cleanEmail) {
+        return await prisma.user.create({
+          data: {
+            email: cleanEmail,
+            phone: null,
+            firstName,
+            lastName,
+            isGuest: true,
+            role: 'USER',
+          },
+        });
+      }
+    }
+    throw err;
+  }
 };
 
 /**
