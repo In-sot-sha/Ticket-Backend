@@ -10,6 +10,22 @@ import { sendEmail, generateWelcomeEmail, generatePasswordResetEmail } from '../
 import { isValidEmail, isValidName, normalizePhone } from '../utils/validation';
 import { findUserByIdentifier } from '../services/guestUser';
 
+const formatStaffProfile = (sp: any) => {
+  if (!sp) return null;
+  let capabilities = sp.capabilities;
+  if (typeof capabilities === 'string') {
+    try {
+      capabilities = JSON.parse(capabilities);
+    } catch {
+      capabilities = capabilities.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+  }
+  return {
+    capabilities: Array.isArray(capabilities) ? capabilities : [],
+    active: sp.active !== false,
+  };
+};
+
 const publicUser = (user: {
   id: number;
   email: string | null;
@@ -18,6 +34,7 @@ const publicUser = (user: {
   lastName: string;
   role: string;
   isStaff?: boolean;
+  staffProfile?: unknown;
   mustChangePassword?: boolean;
   ownedOrganizations?: unknown[];
   vendorProfiles?: unknown[];
@@ -29,6 +46,7 @@ const publicUser = (user: {
   lastName: user.lastName,
   role: user.role,
   isStaff: user.isStaff,
+  staffProfile: formatStaffProfile(user.staffProfile),
   mustChangePassword: user.mustChangePassword,
   ownedOrganizations: user.ownedOrganizations || [],
   vendorProfile: (user as { vendorProfiles?: unknown[] }).vendorProfiles?.[0] || null,
@@ -178,7 +196,7 @@ export const login = async (req: Request, res: Response) => {
 
     const user = await prisma.user.findUnique({
       where: { id: found.id },
-      include: { ownedOrganizations: true, vendorProfiles: true },
+      include: { ownedOrganizations: true, vendorProfiles: true, staffProfile: true },
     });
 
     if (!user) return res.status(400).json({ message: 'Invalid email/phone or password' });
@@ -205,11 +223,11 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.userId! },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, staffProfile: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
     if (!user) return res.status(404).json({ message: 'User not found' });
-    const { vendorProfiles, ...rest } = user as any;
-    return res.json({ ...rest, vendorProfile: vendorProfiles?.[0] || null });
+    const { vendorProfiles, staffProfile, ...rest } = user as any;
+    return res.json({ ...rest, staffProfile: formatStaffProfile(staffProfile), vendorProfile: vendorProfiles?.[0] || null });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -240,10 +258,10 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
         ...(phone !== undefined ? { phone: cleanPhone } : {}),
         avatar,
       },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, staffProfile: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
-    const { vendorProfiles, ...rest } = user as any;
-    return res.json({ message: 'Profile updated successfully', user: { ...rest, vendorProfile: vendorProfiles?.[0] || null } });
+    const { vendorProfiles, staffProfile, ...rest } = user as any;
+    return res.json({ message: 'Profile updated successfully', user: { ...rest, staffProfile: formatStaffProfile(staffProfile), vendorProfile: vendorProfiles?.[0] || null } });
   } catch (error: any) {
     console.error(error);
     if (error?.code === 'P2002') {
@@ -263,11 +281,11 @@ export const uploadAvatar = async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.update({
       where: { id: req.userId! },
       data: { avatar: avatarUrl },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
+      select: { id: true, email: true, firstName: true, lastName: true, phone: true, role: true, avatar: true, isVerified: true, isStaff: true, staffProfile: true, mustChangePassword: true, createdAt: true, ownedOrganizations: true, vendorProfiles: true },
     });
-    const { vendorProfiles, ...rest } = user as any;
+    const { vendorProfiles, staffProfile, ...rest } = user as any;
 
-    return res.json({ message: 'Avatar uploaded successfully', url: avatarUrl, user: { ...rest, vendorProfile: vendorProfiles?.[0] || null } });
+    return res.json({ message: 'Avatar uploaded successfully', url: avatarUrl, user: { ...rest, staffProfile: formatStaffProfile(staffProfile), vendorProfile: vendorProfiles?.[0] || null } });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Failed to upload avatar' });
@@ -624,13 +642,13 @@ export const googleLogin = async (req: Request, res: Response) => {
     // Find or create the user
     let user = await prisma.user.findUnique({
       where: { authProviderId: sub },
-      include: { ownedOrganizations: true, vendorProfiles: true },
+      include: { ownedOrganizations: true, vendorProfiles: true, staffProfile: true },
     });
 
     if (!user) {
       user = await prisma.user.findUnique({
         where: { email },
-        include: { ownedOrganizations: true, vendorProfiles: true },
+        include: { ownedOrganizations: true, vendorProfiles: true, staffProfile: true },
       });
 
       if (user) {
@@ -638,13 +656,13 @@ export const googleLogin = async (req: Request, res: Response) => {
         user = await prisma.user.update({
           where: { id: user.id },
           data: { authProvider: 'google', authProviderId: sub, isVerified: user.isVerified || emailVerified },
-          include: { ownedOrganizations: true, vendorProfiles: true },
+          include: { ownedOrganizations: true, vendorProfiles: true, staffProfile: true },
         });
       } else {
         // Brand-new user
         user = await prisma.user.create({
           data: { email, firstName: given_name, lastName: family_name, avatar: picture, role: 'USER', isVerified: emailVerified, authProvider: 'google', authProviderId: sub },
-          include: { ownedOrganizations: true, vendorProfiles: true },
+          include: { ownedOrganizations: true, vendorProfiles: true, staffProfile: true },
         });
         isNewUser = true;
       }
@@ -719,7 +737,7 @@ export const refreshToken = async (req: Request, res: Response) => {
     // Verify user still exists in database
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      include: { vendorProfiles: true }
+      include: { vendorProfiles: true, staffProfile: true }
     });
 
     if (!user) {
@@ -757,6 +775,7 @@ export const refreshToken = async (req: Request, res: Response) => {
         lastName: user.lastName,
         role: user.role,
         isStaff: user.isStaff,
+        staffProfile: formatStaffProfile(user.staffProfile),
         mustChangePassword: user.mustChangePassword,
         avatar: user.avatar,
         vendorProfile: user.vendorProfiles?.[0] || null

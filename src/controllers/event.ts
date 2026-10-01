@@ -226,11 +226,24 @@ async function userCanManageEvent(userId: number, eventId: number) {
   });
 }
 
-async function resolveOrganizerEventId(userId: number, identifier: string): Promise<number | null> {
+async function resolveOrganizerEventId(
+  userId: number,
+  identifier: string,
+  isAdmin = false
+): Promise<number | null> {
   const asNumber = Number(identifier);
   if (!Number.isNaN(asNumber) && asNumber > 0 && String(asNumber) === identifier) {
+    if (isAdmin) {
+      const ev = await prisma.event.findUnique({ where: { id: asNumber }, select: { id: true } });
+      return ev?.id ?? null;
+    }
     const byId = await userCanManageEvent(userId, asNumber);
     return byId?.id ?? null;
+  }
+
+  if (isAdmin) {
+    const ev = await prisma.event.findFirst({ where: { slug: identifier }, select: { id: true } });
+    return ev?.id ?? null;
   }
 
   const bySlug = await prisma.event.findFirst({
@@ -1231,7 +1244,11 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
       return res.status(400).json({ message: 'Invalid event identifier' });
     }
 
-    const eventId = await resolveOrganizerEventId(req.userId!, identifier);
+    const eventId = await resolveOrganizerEventId(
+      req.userId!,
+      identifier,
+      req.role === 'ADMIN'
+    );
     if (!eventId) {
       return res.status(404).json({ message: 'Event not found or you do not have permission' });
     }
