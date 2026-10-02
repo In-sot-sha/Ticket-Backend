@@ -478,17 +478,41 @@ export const createTicket = async (req: AuthRequest, res: Response) => {
 export const validateTicket = async (req: AuthRequest, res: Response) => {
   try {
     const { qrCode, eventId } = req.body;
-    const identifier = qrCode || req.body.code || req.query.qrCode;
+    const rawIdentifier = qrCode || req.body.code || req.query.qrCode;
     const targetEventId = eventId || req.body.eventId || req.query.eventId;
 
-    if (!identifier || String(identifier).trim() === '') {
+    if (!rawIdentifier || String(rawIdentifier).trim() === '') {
       res.status(400).json({ message: 'Ticket QR code is required' });
       return;
     }
 
+    let cleanId = String(rawIdentifier).trim();
+    if (cleanId.startsWith('http://') || cleanId.startsWith('https://')) {
+      try {
+        const u = new URL(cleanId);
+        const fromParam =
+          u.searchParams.get('qrCode') ||
+          u.searchParams.get('code') ||
+          u.searchParams.get('ticket');
+        if (fromParam) {
+          cleanId = fromParam.trim();
+        } else {
+          const seg = u.pathname.split('/').filter(Boolean).pop();
+          if (seg) cleanId = seg.trim();
+        }
+      } catch {
+        /* keep cleanId */
+      }
+    }
+
     // Only the unique qrCode opens the gate — never the numeric ticket id.
     const ticket = await prisma.ticket.findFirst({
-      where: { qrCode: String(identifier) },
+      where: {
+        OR: [
+          { qrCode: cleanId },
+          { qrCode: String(rawIdentifier).trim() },
+        ],
+      },
       include: {
         event: true,
         ticketType: true,
