@@ -3,7 +3,7 @@ import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/auth';
 import { isValidEmail, isValidName, isValidPhone, normalizePhone, sanitizeString } from '../utils/validation';
 import { createOTP, verifyOTP, consumeOTP, cleanupExpiredOTPs } from '../services/otp';
-import { sendEmail, generateOTPEmail } from '../services/email';
+import { sendEmail, generateOTPEmail, generateMultiDayCheckInEmail } from '../services/email';
 import { deliverTicketsViaWhatsApp, sendWhatsAppOtp } from '../services/whatsapp';
 import {
   assertMaxPerPerson,
@@ -605,9 +605,18 @@ export const validateTicket = async (req: AuthRequest, res: Response) => {
       where: { id: ticket.id },
       data: singleUse ? { status: 'USED' } : { status: 'VALID' },
       include: {
-        event: true,
+        event: {
+          include: {
+            organization: true,
+          },
+        },
         ticketType: true,
         user: true,
+        order: {
+          include: {
+            user: true,
+          },
+        },
       },
     });
 
@@ -631,6 +640,49 @@ export const validateTicket = async (req: AuthRequest, res: Response) => {
       multiDay && !dayPassYmd
         ? `Welcome — entry for ${formatDayLong(today)}`
         : 'Ticket validated — entry approved';
+
+    // If the event is for more than 1 day, send check-in confirmation email to user
+    if (multiDay) {
+      const recipientEmail = (
+        updatedTicket.user?.email ||
+        updatedTicket.order?.user?.email ||
+        ''
+      ).trim();
+
+      if (recipientEmail) {
+        const attendeeName = updatedTicket.user
+          ? `${updatedTicket.user.firstName} ${updatedTicket.user.lastName}`.trim()
+          : updatedTicket.order?.user
+            ? `${updatedTicket.order.user.firstName} ${updatedTicket.order.user.lastName}`.trim()
+            : 'there';
+
+        const siteUrl = (process.env.FRONTEND_URL || 'https://partystorm.ng').replace(/\/$/, '');
+        const emailData = generateMultiDayCheckInEmail({
+          attendeeName,
+          orgName: updatedTicket.event.organization?.name || 'PartyStorm',
+          eventTitle: updatedTicket.event.title,
+          checkInDay: formatDayLong(today),
+          ticketTypeName: updatedTicket.ticketType?.name || 'Standard Pass',
+          qrCode: updatedTicket.qrCode,
+          location: updatedTicket.event.location,
+          startDate: formatDayLong(eventStartDay),
+          endDate: formatDayLong(eventEndDay),
+          isAllDaysPass: !dayPassYmd,
+          ticketsUrl: `${siteUrl}/my-tickets`,
+        });
+
+        // Fire-and-forget so scanning at gate remains instantaneous
+        sendEmail({
+          to: recipientEmail,
+          subject: emailData.subject,
+          html: emailData.html,
+          text: emailData.text,
+          fromName: `${updatedTicket.event.organization?.name || 'PartyStorm'} via PartyStorm`,
+        }).catch((err) => {
+          console.error('Failed to send multi-day gate check-in email:', err);
+        });
+      }
+    }
 
     res.status(200).json({
       valid: true,

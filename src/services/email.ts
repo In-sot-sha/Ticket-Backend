@@ -1191,6 +1191,112 @@ export const generatePostEventThankYouEmail = (data: {
   };
 };
 
+export const generateMultiDayCheckInEmail = (data: {
+  attendeeName?: string;
+  orgName: string;
+  eventTitle: string;
+  checkInDay: string;
+  ticketTypeName: string;
+  qrCode: string;
+  location?: string | null;
+  startDate: string;
+  endDate: string;
+  isAllDaysPass: boolean;
+  ticketsUrl: string;
+}) => {
+  const greet = data.attendeeName?.trim() || 'there';
+  const subject = `Entry Confirmed: ${data.eventTitle} (${data.checkInDay})`;
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(data.qrCode)}`;
+
+  return {
+    subject,
+    html: emailLayout({
+      eyebrow: `Gate Check-In · ${data.orgName}`,
+      preheader: `You are checked in for ${data.checkInDay} at ${data.eventTitle}.`,
+      reason: `You received this email because your ticket was scanned at the gate for ${data.eventTitle}.`,
+      bodyHtml: `
+        ${emailHeroTitle("You're Checked In!", 'Gate Check-In Confirmed')}
+        <p style="margin:0 auto 16px auto;max-width:440px;font-size:15px;line-height:1.55;color:#43454b;text-align:center;">
+          Hi <strong>${greet}</strong>, you've successfully checked in for <strong>${data.checkInDay}</strong> at <strong>${data.eventTitle}</strong>.
+        </p>
+
+        <!-- Ticket Check-In Card -->
+        <div style="background-color:#ffffff;border:1px solid #e5e7eb;border-radius:14px;padding:20px;margin:20px 0;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="padding-bottom:12px;border-bottom:1px solid #f3f4f6;">
+                <span style="font-size:11px;font-weight:700;color:#f43f5e;text-transform:uppercase;letter-spacing:0.5px;">Event</span>
+                <p style="margin:2px 0 0 0;font-size:16px;font-weight:800;color:#111827;">${data.eventTitle}</p>
+                <p style="margin:2px 0 0 0;font-size:13px;color:#6b7280;">Hosted by ${data.orgName}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:12px 0;border-bottom:1px solid #f3f4f6;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td style="vertical-align:top;width:50%;">
+                      <span style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">Checked In For</span>
+                      <p style="margin:2px 0 0 0;font-size:14px;font-weight:700;color:#059669;">${data.checkInDay}</p>
+                    </td>
+                    <td style="vertical-align:top;width:50%;">
+                      <span style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">Ticket Tier</span>
+                      <p style="margin:2px 0 0 0;font-size:14px;font-weight:700;color:#111827;">${data.ticketTypeName}</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            ${
+              data.location
+                ? `<tr>
+              <td style="padding:12px 0;border-bottom:1px solid #f3f4f6;">
+                <span style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">Venue / Location</span>
+                <p style="margin:2px 0 0 0;font-size:14px;font-weight:600;color:#374151;">${data.location}</p>
+              </td>
+            </tr>`
+                : ''
+            }
+          </table>
+
+          ${
+            data.isAllDaysPass
+              ? `<div style="margin-top:16px;padding:12px 14px;background-color:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;">
+                  <p style="margin:0;font-size:13px;line-height:1.5;color:#065f46;">
+                    <strong>Multi-Day Pass Notice:</strong> Your pass is valid for the full event duration (${data.startDate} – ${data.endDate}). Please keep your QR pass handy for gate entry tomorrow and upcoming days!
+                  </p>
+                </div>`
+              : `<div style="margin-top:16px;padding:12px 14px;background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;">
+                  <p style="margin:0;font-size:13px;line-height:1.5;color:#4b5563;">
+                    Enjoy today's event! If you need any assistance, speak to event staff at the gate or information desk.
+                  </p>
+                </div>`
+          }
+
+          <!-- QR Code Display -->
+          <div style="text-align:center;padding-top:20px;">
+            <p style="margin:0 0 8px 0;font-size:12px;font-weight:600;color:#6b7280;">Your Pass QR Code</p>
+            <img src="${qrUrl}" alt="Ticket QR Pass" width="160" height="160" style="display:inline-block;border-radius:10px;border:1px solid #e5e7eb;padding:6px;background:#ffffff;" />
+            <p style="margin:6px 0 0 0;font-family:monospace;font-size:12px;color:#9ca3af;">${data.qrCode}</p>
+          </div>
+        </div>
+
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0;">
+          <tr>
+            <td align="center">
+              ${emailButton(data.ticketsUrl, 'View My Tickets on PartyStorm')}
+            </td>
+          </tr>
+        </table>
+      `,
+    }),
+    text: `Hi ${greet},\n\nYou're checked in for ${data.checkInDay} at ${data.eventTitle}.\nTicket Tier: ${data.ticketTypeName}\n${data.location ? `Venue: ${data.location}\n` : ''}${
+      data.isAllDaysPass
+        ? `Multi-day Pass: Your ticket remains valid for all event days (${data.startDate} – ${data.endDate}). Keep your pass for upcoming days!\n`
+        : ''
+    }\nQR Code: ${data.qrCode}\nView tickets: ${data.ticketsUrl}`,
+  };
+};
+
 export const generateSupportReceivedEmail = (data: {
   name?: string | null;
   subject: string;
@@ -1306,6 +1412,7 @@ export const EMAIL_PREVIEW_IDS = [
   'host-admin',
   'host-approved',
   'host-rejected',
+  'multiday-checkin',
 ] as const;
 
 export type EmailPreviewId = (typeof EMAIL_PREVIEW_IDS)[number];
@@ -1425,6 +1532,20 @@ export function getEmailPreview(id: EmailPreviewId): EmailTemplate {
         organizationName: 'Kano Live',
         reason: 'Please add a public website or Instagram and a clear business description, then resubmit.',
       });
+    case 'multiday-checkin':
+      return generateMultiDayCheckInEmail({
+        attendeeName: 'Ada Lovelace',
+        orgName: 'Lagos Tech Week',
+        eventTitle: 'Lagos Tech Week 2026',
+        checkInDay: 'Saturday, Aug 15, 2026',
+        ticketTypeName: 'All Access VIP Pass',
+        qrCode: 'QR-PASS-MULTIDAY-001',
+        location: 'Landmark Centre, Victoria Island, Lagos',
+        startDate: 'Friday, Aug 14, 2026',
+        endDate: 'Sunday, Aug 16, 2026',
+        isAllDaysPass: true,
+        ticketsUrl: `${SITE_URL}/my-tickets`,
+      });
     default:
       return generateWelcomeEmail('there');
   }
@@ -1447,6 +1568,7 @@ export default {
   generateVendorApplicationEmail,
   generateStaffInviteEmail,
   generateOrganizerMessageEmail,
+  generateMultiDayCheckInEmail,
   generateSupportReceivedEmail,
   generateSupportReplyEmail,
   generateSupportResolvedEmail,
