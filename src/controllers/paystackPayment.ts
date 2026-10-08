@@ -19,6 +19,7 @@ import {
   TicketCheckoutPayload,
   VendorCheckoutPayload,
 } from '../services/checkoutFulfillment';
+import { paystackTransactionSplit } from '../constants/fees';
 import { isValidEmail, normalizePhone } from '../utils/validation';
 import { assertTicketSalesOpen } from '../services/ticketSales';
 import { assertMaxPerPerson, getMaxPerPerson } from '../services/guestUser';
@@ -213,8 +214,7 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
 
       const amountKobo = Math.round(fees.chargeAmount * 100);
       const subaccount = event.organization?.paystackSubaccountCode || undefined;
-      const transactionChargeKobo = Math.round(fees.platformFee * 100);
-      const bearer = absorbFee && fees.subtotal > 0 ? 'subaccount' : 'account';
+      const split = paystackTransactionSplit(fees);
 
       let accessCode: string | undefined;
       let authorizationUrl: string | undefined;
@@ -238,8 +238,8 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
             ],
           },
           subaccount: subaccount || undefined,
-          transactionChargeKobo: subaccount ? transactionChargeKobo : undefined,
-          bearer: subaccount ? bearer : undefined,
+          transactionChargeKobo: subaccount ? split.transactionChargeKobo : undefined,
+          bearer: subaccount ? split.bearer : undefined,
         });
         accessCode = init.accessCode;
         authorizationUrl = init.authorizationUrl;
@@ -368,6 +368,7 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
       const reference = makePaymentReference('VND', event.id);
       const amountKobo = Math.round(fees.chargeAmount * 100);
       const subaccount = event.organization?.paystackSubaccountCode || undefined;
+      const split = paystackTransactionSplit(fees);
 
       let accessCode: string | undefined;
       let authorizationUrl: string | undefined;
@@ -378,8 +379,8 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
           reference,
           metadata: { kind: 'VENDOR', eventId: event.id, vendorTypeId: vendorType.id },
           subaccount,
-          transactionChargeKobo: subaccount ? Math.round(fees.platformFee * 100) : undefined,
-          bearer: subaccount ? (absorbFee ? 'subaccount' : 'account') : undefined,
+          transactionChargeKobo: subaccount ? split.transactionChargeKobo : undefined,
+          bearer: subaccount ? split.bearer : undefined,
         });
         accessCode = init.accessCode;
         authorizationUrl = init.authorizationUrl;
