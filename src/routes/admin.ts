@@ -3,6 +3,7 @@ import { verifyToken, requireRole } from '../middleware/auth';
 import {
   getDashboardStats,
   getHostApplications,
+  createHostOrganization,
   verifyHostApplication,
   rejectHostApplication,
   getUsers,
@@ -17,6 +18,7 @@ import {
   promoteEvent,
   updateOrganizationFee,
   getPayoutRequests,
+  getPaystackSettlements,
   approvePayout,
   rejectPayout,
 } from '../controllers/admin';
@@ -51,6 +53,7 @@ router.use(verifyToken, requireRole('ADMIN'));
 
 router.get('/stats', getDashboardStats);
 router.get('/host-applications', getHostApplications);
+router.post('/host-applications', createHostOrganization);
 router.put('/host-applications/:id/verify', verifyHostApplication);
 router.put('/host-applications/:id/reject', rejectHostApplication);
 router.put('/host-applications/:id/fee', updateOrganizationFee);
@@ -59,6 +62,7 @@ router.put('/users/:id/role', updateUserRole);
 router.get('/transactions', getTransactions);
 router.get('/revenue', getRevenue);
 router.get('/payouts', getPayoutRequests);
+router.get('/settlements', getPaystackSettlements);
 router.post('/payouts/:id/approve', approvePayout);
 router.post('/payouts/:id/reject', rejectPayout);
 router.post('/payments/resolve', resolvePaystackPayment);

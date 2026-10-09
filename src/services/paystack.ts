@@ -189,6 +189,11 @@ export async function createOrUpdatePaystackSubaccount(input: {
     if (updated.ok && updated.data?.subaccount_code) {
       return updated.data.subaccount_code;
     }
+    const message = updated.message || 'Failed to update Paystack subaccount';
+    // A deleted code can be replaced. Any other failure must keep the current subaccount.
+    if (!/not found/i.test(message)) {
+      throw new Error(message);
+    }
   }
 
   const created = await paystackFetch<{ subaccount_code: string }>('/subaccount', {
@@ -205,6 +210,91 @@ export async function createOrUpdatePaystackSubaccount(input: {
     throw new Error(created.message || 'Failed to create Paystack subaccount');
   }
   return created.data.subaccount_code;
+}
+
+export type PaystackSettlementRow = {
+  id: number;
+  status: string;
+  amount: number;
+  settlementDate: string | null;
+  subaccountCode: string | null;
+  businessName: string | null;
+  references: string[];
+};
+
+export type PaystackSettlementSnapshot = {
+  configured: boolean;
+  settlements: PaystackSettlementRow[];
+  byReference: Record<string, { status: string; settlementDate: string | null; settlementId: number }>;
+};
+
+let settlementCache: { at: number; body: PaystackSettlementSnapshot } | null = null;
+
+export async function loadPaystackSettlementSnapshot(): Promise<PaystackSettlementSnapshot> {
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    return { configured: false, settlements: [], byReference: {} };
+  }
+  if (settlementCache && Date.now() - settlementCache.at < 5 * 60 * 1000) {
+    return settlementCache.body;
+  }
+
+  const recent = (await listPaystackSettlements(20)).slice(0, 12);
+  const txLists: any[][] = [];
+  for (let i = 0; i < recent.length; i += 4) {
+    const chunk = recent.slice(i, i + 4);
+    const loaded = await Promise.all(
+      chunk.map((settlement) => listPaystackSettlementTransactions(settlement.id).catch(() => [] as any[])),
+    );
+    txLists.push(...loaded);
+  }
+
+  const byReference: PaystackSettlementSnapshot['byReference'] = {};
+  const settlements: PaystackSettlementRow[] = recent.map((settlement, index) => {
+    const txs = txLists[index] || [];
+    const sub = txs.find((tx) => tx?.subaccount)?.subaccount || settlement.subaccount;
+    const code = sub?.subaccount_code || null;
+    const references: string[] = [];
+    for (const tx of txs) {
+      if (!tx?.reference) continue;
+      const reference = String(tx.reference);
+      references.push(reference);
+      byReference[reference] = {
+        status: String(settlement.status || ''),
+        settlementDate: settlement.settlement_date || settlement.createdAt || null,
+        settlementId: settlement.id,
+      };
+    }
+    const amountKobo = Number(settlement.effective_amount ?? settlement.total_amount ?? 0);
+    return {
+      id: settlement.id,
+      status: String(settlement.status || ''),
+      amount: amountKobo / 100,
+      settlementDate: settlement.settlement_date || settlement.createdAt || null,
+      subaccountCode: code,
+      businessName: sub?.business_name || null,
+      references,
+    };
+  });
+
+  const body = { configured: true, settlements, byReference };
+  settlementCache = { at: Date.now(), body };
+  return body;
+}
+
+export async function listPaystackSettlements(perPage = 20): Promise<any[]> {
+  const result = await paystackFetch<any[]>(`/settlement?perPage=${perPage}`);
+  if (!result.ok || !Array.isArray(result.data)) {
+    throw new Error(result.message || 'Failed to list Paystack settlements');
+  }
+  return result.data;
+}
+
+export async function listPaystackSettlementTransactions(settlementId: number | string): Promise<any[]> {
+  const result = await paystackFetch<any[]>(
+    `/settlement/${encodeURIComponent(String(settlementId))}/transactions?perPage=100`,
+  );
+  if (!result.ok || !Array.isArray(result.data)) return [];
+  return result.data;
 }
 
 export function makePaymentReference(prefix: string, eventId: number): string {

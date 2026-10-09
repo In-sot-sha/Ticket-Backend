@@ -354,7 +354,8 @@ export const getEvents = async (req: Request, res: Response) => {
             id: true,
             name: true,
             logo: true,
-            isVerified: true
+            isVerified: true,
+            absorbFee: true,
           }
         },
         ticketTypes: {
@@ -1445,7 +1446,7 @@ export const getOrganizerAnalytics = async (req: AuthRequest, res: Response) => 
 
     const topEvents = [...eventsWithStats]
       .sort((a: EventWithStats, b: EventWithStats) => b.stats.actualRevenue - a.stats.actualRevenue)
-      .slice(0, 5)
+      .slice(0, 3)
       .map((e: any) => ({
         id: e.id,
         title: e.title,
@@ -1461,15 +1462,27 @@ export const getOrganizerAnalytics = async (req: AuthRequest, res: Response) => 
       where: {
         status: { not: 'CANCELLED' },
         event: orgWhere,
+        ticketType: { price: { gt: 0 } },
       },
       include: {
         event: { select: { id: true, title: true } },
         ticketType: { select: { name: true, price: true } },
         user: { select: { firstName: true, lastName: true } },
+        order: { select: { paymentReference: true } },
       },
       orderBy: { createdAt: 'desc' },
-      take: 15,
+      take: 20,
     });
+
+    const channelFor = (purchaseType: string, paymentMethod: string | null) => {
+      if (purchaseType === 'GATE') {
+        if (paymentMethod === 'CASH') return 'Cash';
+        if (paymentMethod === 'POS') return 'POS';
+        if (paymentMethod === 'TRANSFER') return 'Transfer';
+        return 'At the door';
+      }
+      return 'Online';
+    };
 
     const transactions = recentSales.map((t: (typeof recentSales)[number]) => ({
       id: t.id,
@@ -1480,6 +1493,8 @@ export const getOrganizerAnalytics = async (req: AuthRequest, res: Response) => 
       buyerName: t.user ? `${t.user.firstName} ${t.user.lastName}`.trim() : 'Guest',
       date: t.createdAt,
       status: t.status === 'USED' ? 'checked_in' : 'sold',
+      channel: channelFor(t.purchaseType, t.paymentMethod),
+      paymentReference: t.order?.paymentReference || null,
     }));
 
     const revenueByEvent = eventsWithStats

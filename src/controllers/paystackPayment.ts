@@ -213,7 +213,13 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
       const reference = makePaymentReference('EVT', event.id);
 
       const amountKobo = Math.round(fees.chargeAmount * 100);
-      const subaccount = event.organization?.paystackSubaccountCode || undefined;
+      let subaccount: string | undefined;
+      try {
+        const code = await requireOrganizerSubaccount(event.organization);
+        subaccount = code || undefined;
+      } catch (err: any) {
+        return res.status(err.status || 400).json({ message: err.message });
+      }
       const split = paystackTransactionSplit(fees);
 
       let accessCode: string | undefined;
@@ -367,7 +373,13 @@ export const initializePaystackCheckout = async (req: AuthRequest, res: Response
 
       const reference = makePaymentReference('VND', event.id);
       const amountKobo = Math.round(fees.chargeAmount * 100);
-      const subaccount = event.organization?.paystackSubaccountCode || undefined;
+      let subaccount: string | undefined;
+      try {
+        const code = await requireOrganizerSubaccount(event.organization);
+        subaccount = code || undefined;
+      } catch (err: any) {
+        return res.status(err.status || 400).json({ message: err.message });
+      }
       const split = paystackTransactionSplit(fees);
 
       let accessCode: string | undefined;
@@ -607,37 +619,61 @@ export const resolvePaystackPayment = async (req: AuthRequest, res: Response) =>
 };
 
 /**
- * Ensure org has a Paystack subaccount from payout bank details.
+ * Create or update the organizer's Paystack subaccount from the saved bank details.
+ * Returns null when bank details are incomplete.
+ * Throws when details are present but Paystack cannot accept them.
+ * An existing subaccount is updated in place, so a bank change keeps the same code.
  */
 export async function syncOrganizationSubaccount(organizationId: number): Promise<string | null> {
   const org = await prisma.organization.findUnique({ where: { id: organizationId } });
   if (!org?.payoutBankName || !org.payoutAccountNumber || !org.payoutAccountName) {
     return null;
   }
-  if (!process.env.PAYSTACK_SECRET_KEY) return org.paystackSubaccountCode;
-
-  try {
-    const bankCode = await resolveBankCode(org.payoutBankName);
-    if (!bankCode) {
-      console.warn(`[Paystack Subaccount] Could not resolve bank code for "${org.payoutBankName}"`);
-      return org.paystackSubaccountCode;
-    }
-    const code = await createOrUpdatePaystackSubaccount({
-      businessName: org.name,
-      settlementBank: bankCode,
-      accountNumber: org.payoutAccountNumber,
-      percentageCharge: 0,
-      existingCode: org.paystackSubaccountCode,
-    });
-    if (code !== org.paystackSubaccountCode) {
-      await prisma.organization.update({
-        where: { id: org.id },
-        data: { paystackSubaccountCode: code },
-      });
-    }
-    return code;
-  } catch (err) {
-    console.error('[Paystack Subaccount] sync failed:', err);
-    return org.paystackSubaccountCode;
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    throw new Error('Paystack is not configured, so this bank account could not be connected.');
   }
+
+  const bankCode = await resolveBankCode(org.payoutBankName);
+  if (!bankCode) {
+    throw new Error(
+      `Paystack does not recognize "${org.payoutBankName}". Choose the bank from the list and save again.`,
+    );
+  }
+
+  const code = await createOrUpdatePaystackSubaccount({
+    businessName: org.name,
+    settlementBank: bankCode,
+    accountNumber: org.payoutAccountNumber,
+    percentageCharge: 0,
+    existingCode: org.paystackSubaccountCode,
+  });
+  if (code !== org.paystackSubaccountCode) {
+    await prisma.organization.update({
+      where: { id: org.id },
+      data: { paystackSubaccountCode: code },
+    });
+  }
+  return code;
+}
+
+const PAYOUT_ACCOUNT_REQUIRED =
+  'This event cannot take payment yet. The organizer needs to connect a payout bank account.';
+
+/** Paid checkout must split to a subaccount. Tries once to create it from saved bank details. */
+async function requireOrganizerSubaccount(
+  org: { id: number; paystackSubaccountCode?: string | null } | null | undefined,
+): Promise<string> {
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    return org?.paystackSubaccountCode || '';
+  }
+  if (org?.paystackSubaccountCode) return org.paystackSubaccountCode;
+  if (org?.id) {
+    try {
+      const code = await syncOrganizationSubaccount(org.id);
+      if (code) return code;
+    } catch (err) {
+      console.error('[Paystack Subaccount] checkout sync failed:', err);
+    }
+  }
+  throw Object.assign(new Error(PAYOUT_ACCOUNT_REQUIRED), { status: 400 });
 }

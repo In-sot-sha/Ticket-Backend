@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
 import { PLATFORM_FEE_RATE } from '../constants/fees';
+import { loadPaystackSettlementSnapshot } from '../services/paystack';
 import {
   sendEmail,
   generateSupportReplyEmail,
@@ -520,6 +521,113 @@ export const getHostApplications = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const createHostOrganization = async (req: AuthRequest, res: Response) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const description = req.body.description ? String(req.body.description).trim() : '';
+    const website = req.body.website ? String(req.body.website).trim() : null;
+    const logo = req.body.logo ? String(req.body.logo).trim() : null;
+    const socials = req.body.socials ? String(req.body.socials).trim() : null;
+    const ownerId = Number(req.body.ownerId);
+
+    if (!name) {
+      return res.status(400).json({ message: 'Organization name is required' });
+    }
+    if (!description) {
+      return res.status(400).json({ message: 'Description is required' });
+    }
+    if (!socials) {
+      return res.status(400).json({ message: 'Add at least 1 social profile' });
+    }
+    if (!Number.isInteger(ownerId) || ownerId <= 0) {
+      return res.status(400).json({ message: 'Select an owner' });
+    }
+
+    const owner = await prisma.user.findUnique({ where: { id: ownerId } });
+    if (!owner) {
+      return res.status(404).json({ message: 'Owner not found' });
+    }
+    if (owner.isGuest) {
+      return res.status(400).json({ message: 'A guest account cannot own an organization' });
+    }
+
+    const duplicate = await prisma.organization.findFirst({
+      where: { ownerId, name },
+    });
+    if (duplicate) {
+      return res.status(400).json({ message: 'This person already has an organization with that name' });
+    }
+
+    const organization = await prisma.$transaction(async (tx) => {
+      const created = await tx.organization.create({
+        data: {
+          name,
+          description,
+          website: website || null,
+          logo: logo || null,
+          socials: socials || null,
+          ownerId,
+          isVerified: true,
+        },
+      });
+
+      await tx.organizationMember.create({
+        data: {
+          userId: ownerId,
+          organizationId: created.id,
+          role: 'admin',
+        },
+      });
+
+      if (owner.role === 'USER' || owner.role === 'VENDOR') {
+        await tx.user.update({
+          where: { id: ownerId },
+          data: { role: 'ORGANIZER' },
+        });
+      }
+
+      return tx.organization.findUnique({
+        where: { id: created.id },
+        include: {
+          owner: {
+            select: {
+              id: true,
+              email: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+              role: true,
+              createdAt: true,
+            },
+          },
+          _count: { select: { events: true, members: true } },
+        },
+      });
+    });
+
+    if (owner.email) {
+      const tpl = generateHostApplicationApprovedEmail({
+        firstName: owner.firstName,
+        organizationName: name,
+      });
+      void sendEmail({
+        to: owner.email,
+        subject: tpl.subject,
+        html: tpl.html,
+        text: tpl.text,
+      }).catch((err) => console.error('[Host] Created-org approval email failed:', err));
+    }
+
+    return res.status(201).json({
+      message: 'Organization created and approved',
+      organization,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
 export const verifyHostApplication = async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -682,6 +790,7 @@ export const getUsers = async (req: AuthRequest, res: Response) => {
         phone: true,
         role: true,
         isVerified: true,
+        isGuest: true,
         isStaff: true,
         createdAt: true,
         ownedOrganizations: {
@@ -849,6 +958,30 @@ export const updateOrganizationFee = async (req: AuthRequest, res: Response) => 
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getPaystackSettlements = async (_req: AuthRequest, res: Response) => {
+  try {
+    const snapshot = await loadPaystackSettlementSnapshot();
+    const orgs = await prisma.organization.findMany({
+      where: { paystackSubaccountCode: { not: null } },
+      select: { name: true, paystackSubaccountCode: true },
+    });
+    const orgByCode = new Map(orgs.map((org) => [org.paystackSubaccountCode, org.name]));
+    return res.json({
+      configured: snapshot.configured,
+      byReference: snapshot.byReference,
+      settlements: snapshot.settlements.map((settlement) => ({
+        ...settlement,
+        organizationName: settlement.subaccountCode
+          ? orgByCode.get(settlement.subaccountCode) || settlement.businessName || null
+          : 'PartyStorm',
+      })),
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Could not load Paystack settlements' });
   }
 };
 

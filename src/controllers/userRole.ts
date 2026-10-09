@@ -246,12 +246,48 @@ export const updateOrganizerProfile = async (req: AuthRequest, res: Response) =>
       }
     });
 
-    // Best-effort: create/update Paystack subaccount when bank details present
-    try {
-      const { syncOrganizationSubaccount } = await import('./paystackPayment');
-      await syncOrganizationSubaccount(updatedOrg.id);
-    } catch (err) {
-      console.warn('[Organizer Profile] Subaccount sync skipped:', err);
+    const payoutTouched =
+      payoutBankName !== undefined ||
+      payoutAccountNumber !== undefined ||
+      payoutAccountName !== undefined;
+    const bankReady = Boolean(
+      updatedOrg.payoutBankName && updatedOrg.payoutAccountNumber && updatedOrg.payoutAccountName,
+    );
+    if (payoutTouched && !bankReady) {
+      await prisma.organization.update({
+        where: { id: updatedOrg.id },
+        data: {
+          payoutBankName: organization.payoutBankName,
+          payoutAccountNumber: organization.payoutAccountNumber,
+          payoutAccountName: organization.payoutAccountName,
+        },
+      });
+      return res.status(400).json({
+        message: organization.paystackSubaccountCode
+          ? 'Enter the new bank, account number, and account name. The current account stays in use until Paystack accepts the change.'
+          : 'Enter the bank, account number, and account name to connect payouts.',
+      });
+    }
+    if (bankReady && (payoutTouched || !updatedOrg.paystackSubaccountCode)) {
+      try {
+        const { syncOrganizationSubaccount } = await import('./paystackPayment');
+        await syncOrganizationSubaccount(updatedOrg.id);
+      } catch (err: any) {
+        await prisma.organization.update({
+          where: { id: updatedOrg.id },
+          data: {
+            payoutBankName: organization.payoutBankName,
+            payoutAccountNumber: organization.payoutAccountNumber,
+            payoutAccountName: organization.payoutAccountName,
+            paystackSubaccountCode: organization.paystackSubaccountCode,
+          },
+        });
+        return res.status(400).json({
+          message:
+            err?.message ||
+            'Could not connect this bank account on Paystack. The previous account is still in use.',
+        });
+      }
     }
 
     const refreshed = await prisma.organization.findUnique({ where: { id: updatedOrg.id } });
