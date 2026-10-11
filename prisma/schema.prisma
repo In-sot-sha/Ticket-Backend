@@ -374,6 +374,11 @@ model TicketType {
   ticketHeadline String? // e.g. "COME AND JOIN" / "You're invited"
   venueLabel     String? // e.g. "LIVE AT" / "Venue"
   ticketSublabel String? // e.g. "First class" / "Admit one"
+  /**
+   * Admin override: PartyStorm take per sold unit (₦).
+   * Null = use the default 6% · min ₦100 · max ₦2,000 formula.
+   */
+  platformFeeNaira Float?
   /** Organizer closed sales for this type (e.g. a past day pass). Existing tickets stay valid. */
   isPaused       Boolean  @default(false)
   maxPerPerson   Int?     @default(5)

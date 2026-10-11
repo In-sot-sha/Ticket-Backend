@@ -370,6 +370,7 @@ export const getEvents = async (req: Request, res: Response) => {
             ticketHeadline: true,
             venueLabel: true,
             ticketSublabel: true,
+            platformFeeNaira: true,
             isPaused: true,
             validOn: true,
           },
@@ -486,7 +487,8 @@ export const getEvent = async (req: Request, res: Response) => {
         select: {
           id: true, name: true, price: true, quantity: true,
           ticketStyle: true, accentColor: true, badgeText: true,
-            ticketHeadline: true, venueLabel: true, ticketSublabel: true, maxPerPerson: true, isPaused: true, validOn: true,
+            ticketHeadline: true, venueLabel: true, ticketSublabel: true,
+            platformFeeNaira: true, maxPerPerson: true, isPaused: true, validOn: true,
         },
       },
       vendorTypes: {
@@ -1167,6 +1169,7 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
             ticketHeadline: true,
             venueLabel: true,
             ticketSublabel: true,
+            platformFeeNaira: true,
             isPaused: true,
             validOn: true,
           },
@@ -1279,6 +1282,7 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
             ticketHeadline: true,
             venueLabel: true,
             ticketSublabel: true,
+            platformFeeNaira: true,
             maxPerPerson: true,
             isPaused: true,
             validOn: true,
@@ -1325,7 +1329,7 @@ export const getOrganizerAnalytics = async (req: AuthRequest, res: Response) => 
       where: orgWhere,
       include: {
         ticketTypes: {
-          select: { id: true, name: true, price: true, quantity: true },
+          select: { id: true, name: true, price: true, quantity: true, platformFeeNaira: true },
         },
       },
       orderBy: { createdAt: 'desc' },

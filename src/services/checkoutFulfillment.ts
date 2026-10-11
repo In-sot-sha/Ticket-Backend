@@ -407,12 +407,17 @@ export async function fulfillVendorCheckout(input: {
   return { vendorApplication, reused: false };
 }
 
-export function buildFeesForTicket(unitPrice: number, quantity: number, absorbFee: boolean) {
-  return calculateUnitOrderFees(unitPrice, quantity, absorbFee);
+export function buildFeesForTicket(
+  unitPrice: number,
+  quantity: number,
+  absorbFee: boolean,
+  platformFeeNaira?: number | null,
+) {
+  return calculateUnitOrderFees(unitPrice, quantity, absorbFee, platformFeeNaira);
 }
 
 export function buildFeesForTicketCart(
-  lines: Array<{ unitPrice: number; quantity: number }>,
+  lines: Array<{ unitPrice: number; quantity: number; platformFeeNaira?: number | null }>,
   absorbFee: boolean,
 ) {
   return calculateCartOrderFees(lines, absorbFee);

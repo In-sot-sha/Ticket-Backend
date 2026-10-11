@@ -870,6 +870,7 @@ export const getAdminEvents = async (req: AuthRequest, res: Response) => {
             price: true,
             quantity: true,
             isPaused: true,
+            platformFeeNaira: true,
             _count: { select: { tickets: true } },
           },
         },
@@ -906,6 +907,64 @@ export const promoteEvent = async (req: AuthRequest, res: Response) => {
     });
 
     return res.json({ message: 'Event promotion updated', event });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/** Admin-only: set PartyStorm take (₦) on one ticket tier. Null clears override → default formula. */
+export const updateTicketTypePlatformFee = async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ message: 'Invalid ticket type ID' });
+    }
+
+    const raw = req.body?.platformFeeNaira;
+    let platformFeeNaira: number | null;
+    if (raw === null || raw === undefined || raw === '') {
+      platformFeeNaira = null;
+    } else {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ message: 'platformFeeNaira must be a number ≥ 0, or null to use the default formula' });
+      }
+      platformFeeNaira = Math.round(n);
+    }
+
+    const existing = await prisma.ticketType.findUnique({
+      where: { id },
+      select: { id: true, name: true, price: true, eventId: true, platformFeeNaira: true },
+    });
+    if (!existing) {
+      return res.status(404).json({ message: 'Ticket type not found' });
+    }
+
+    const updated = await prisma.ticketType.update({
+      where: { id },
+      data: { platformFeeNaira },
+      select: {
+        id: true,
+        name: true,
+        price: true,
+        quantity: true,
+        isPaused: true,
+        platformFeeNaira: true,
+        eventId: true,
+      },
+    });
+
+    console.log(
+      `[ADMIN AUDIT] Admin (ID: ${req.userId}) set TicketType ${id} platformFeeNaira=${platformFeeNaira} (was ${existing.platformFeeNaira})`,
+    );
+
+    return res.json({
+      message: platformFeeNaira == null
+        ? 'Ticket tier fee cleared — default formula applies'
+        : `Ticket tier fee set to ₦${platformFeeNaira}`,
+      ticketType: updated,
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });

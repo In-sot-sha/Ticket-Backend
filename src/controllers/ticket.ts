@@ -964,10 +964,14 @@ export const checkoutGuest = async (req: AuthRequest, res: Response) => {
 
     const absorbFee = event.organization?.absorbFee ?? false;
     const fees = calculateCartOrderFees(
-      items.map((item) => ({
-        unitPrice: Number(typeById.get(item.ticketTypeId)?.price || 0),
-        quantity: item.quantity,
-      })),
+      items.map((item) => {
+        const ticketType = typeById.get(item.ticketTypeId);
+        return {
+          unitPrice: Number(ticketType?.price || 0),
+          quantity: item.quantity,
+          platformFeeNaira: ticketType?.platformFeeNaira ?? null,
+        };
+      }),
       absorbFee,
     );
 

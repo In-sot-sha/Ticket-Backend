@@ -13,8 +13,18 @@ export const PAYSTACK_LOCAL_CAP = 2000;
 export const PROCESSING_FEE_RATE = PAYSTACK_RATE;
 export const PROCESSING_FEE_FLAT = PAYSTACK_FLAT;
 
-export function platformFeeForUnit(price: number): number {
+/**
+ * PartyStorm take per unit.
+ * Pass `platformFeeNaira` to override the default 6% · min ₦100 · max ₦2,000 formula.
+ */
+export function platformFeeForUnit(
+  price: number,
+  platformFeeNaira?: number | null,
+): number {
   if (price <= 0) return 0;
+  if (platformFeeNaira != null && Number.isFinite(Number(platformFeeNaira))) {
+    return Math.max(0, Math.round(Number(platformFeeNaira)));
+  }
   return Math.min(
     PLATFORM_FEE_MAX,
     Math.max(PLATFORM_FEE_MIN, Math.round(price * PLATFORM_FEE_RATE)),
@@ -134,17 +144,25 @@ export function calculateUnitOrderFees(
   unitPrice: number,
   quantity: number,
   absorbFee: boolean,
+  platformFeeNaira?: number | null,
 ): OrderFeeBreakdown {
   const qty = Math.max(0, Math.floor(quantity));
   if (qty <= 0) return emptyFees(absorbFee);
   const subtotal = Math.round(Number(unitPrice) * qty);
-  const platformFee = platformFeeForUnit(Number(unitPrice)) * qty;
+  const platformFee = platformFeeForUnit(Number(unitPrice), platformFeeNaira) * qty;
   return feesFromSubtotalAndPlatform(subtotal, platformFee, absorbFee);
 }
 
+export type CartFeeLine = {
+  unitPrice: number;
+  quantity: number;
+  /** Admin override per unit; null/undefined uses the default formula. */
+  platformFeeNaira?: number | null;
+};
+
 /** Combine several ticket lines into one Paystack charge. */
 export function calculateCartOrderFees(
-  lines: Array<{ unitPrice: number; quantity: number }>,
+  lines: Array<CartFeeLine>,
   absorbFee: boolean,
 ): OrderFeeBreakdown {
   let subtotal = 0;
@@ -154,7 +172,7 @@ export function calculateCartOrderFees(
     if (qty <= 0) continue;
     const unit = Number(line.unitPrice) || 0;
     subtotal += Math.round(unit * qty);
-    platformFee += platformFeeForUnit(unit) * qty;
+    platformFee += platformFeeForUnit(unit, line.platformFeeNaira) * qty;
   }
   return feesFromSubtotalAndPlatform(subtotal, platformFee, absorbFee);
 }
