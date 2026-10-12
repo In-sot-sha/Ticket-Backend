@@ -47,8 +47,9 @@ export type OrderFeeBreakdown = {
   /** Amount the buyer / payment provider should charge. */
   chargeAmount: number;
   /**
-   * Organizer share. Face value when the buyer pays the fee.
-   * Face value minus PartyStorm and Paystack when the organizer absorbs.
+   * Organizer share (subaccount).
+   * Face value when the buyer pays the fee.
+   * Face value minus PartyStorm take when fees are absorbed (Paystack is borne by PartyStorm).
    */
   netAmount: number;
   absorbFee: boolean;
@@ -68,7 +69,8 @@ const emptyFees = (absorbFee: boolean): OrderFeeBreakdown => ({
  * Cart-level fees from summed face value + per-unit platform fees.
  * Paystack processing is applied once on the cart (not per line).
  * Pass-through: buyer pays face value + PartyStorm + Paystack. Organizer net is the face value.
- * Absorb: buyer pays face value only; host covers platform + processing from payout.
+ * Absorb: buyer pays face value only. Organizer net is face − PartyStorm take.
+ * Paystack is always borne by the main (PartyStorm) account from that take.
  * Free / RSVP lines have ₦0 platform fee.
  */
 export function feesFromSubtotalAndPlatform(
@@ -91,7 +93,8 @@ export function feesFromSubtotalAndPlatform(
       processingFee,
       feeChargedToBuyer: 0,
       chargeAmount: safeSubtotal,
-      netAmount: Math.max(0, safeSubtotal - safePlatform - processingFee),
+      // Organizer keeps face − PartyStorm take; Paystack comes out of our take.
+      netAmount: Math.max(0, safeSubtotal - safePlatform),
       absorbFee: true,
     };
   }
@@ -117,8 +120,11 @@ export function feesFromSubtotalAndPlatform(
 
 /**
  * Paystack split for one charge.
- * Buyer pays the fee: main account takes PartyStorm + Paystack, and bears Paystack's deduction.
- * Organizer absorbs: main account takes only the PartyStorm fee; the subaccount bears Paystack.
+ * Always bearer = account so Paystack fees come from PartyStorm, not the organizer subaccount.
+ *
+ * Pass-through: main takes PartyStorm + Paystack (then Paystack deducts its fee → we net PartyStorm take).
+ * Absorb: main takes only the PartyStorm take (Paystack deducts from that → we net take − Paystack).
+ * Subaccount gets charge − transaction_charge (= face, or face − take when absorbed).
  */
 export function paystackTransactionSplit(fees: OrderFeeBreakdown): {
   transactionChargeKobo: number;
@@ -128,7 +134,7 @@ export function paystackTransactionSplit(fees: OrderFeeBreakdown): {
   if (absorb) {
     return {
       transactionChargeKobo: Math.round(fees.platformFee * 100),
-      bearer: 'subaccount',
+      bearer: 'account',
     };
   }
   return {
