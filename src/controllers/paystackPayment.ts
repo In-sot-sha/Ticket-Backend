@@ -562,6 +562,217 @@ export const paystackWebhook = async (req: Request, res: Response) => {
   }
 };
 
+/** Ignore brand-new checkouts still open on Paystack. */
+const PENDING_MIN_AGE_MS = 2 * 60 * 1000;
+/** Don't surface ancient abandoned checkouts in the stuck list. */
+const PENDING_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** Paystack statuses that mean money was never successfully captured. */
+const PAYSTACK_DEAD_STATUSES = new Set([
+  'abandoned',
+  'failed',
+  'reversed',
+  'cancelled',
+  'canceled',
+]);
+
+function emailFromIntentPayload(payloadRaw: string | null | undefined): string | null {
+  try {
+    const payload = JSON.parse(payloadRaw || '{}');
+    const email = String(payload.email || payload.businessEmail || '').trim();
+    return email || null;
+  } catch {
+    return null;
+  }
+}
+
+async function markIntentFailed(id: number, paystackStatus: string) {
+  await prisma.paymentIntent.update({
+    where: { id },
+    data: { status: 'FAILED', paystackStatus },
+  });
+}
+
+/**
+ * Admin: list PENDING intents that might be paid-but-unfulfilled.
+ * Abandoned/canceled checkouts are NOT tracked until we verify with Paystack (sweep);
+ * this list only shows recent PENDING rows (2 min … 14 days old).
+ * GET /admin/payments/pending
+ */
+export const listPendingPaymentIntents = async (_req: AuthRequest, res: Response) => {
+  try {
+    const now = Date.now();
+    const minCreatedAt = new Date(now - PENDING_MAX_AGE_MS);
+    const maxCreatedAt = new Date(now - PENDING_MIN_AGE_MS);
+
+    // Expire very old PENDING rows without calling Paystack (buyer never finished checkout).
+    await prisma.paymentIntent.updateMany({
+      where: {
+        status: 'PENDING',
+        amountKobo: { gt: 0 },
+        createdAt: { lt: minCreatedAt },
+      },
+      data: { status: 'FAILED', paystackStatus: 'expired_unpaid' },
+    });
+
+    const intents = await prisma.paymentIntent.findMany({
+      where: {
+        status: 'PENDING',
+        amountKobo: { gt: 0 },
+        createdAt: { gt: minCreatedAt, lt: maxCreatedAt },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    const eventIds = [...new Set(intents.map((i) => i.eventId))];
+    const events = eventIds.length
+      ? await prisma.event.findMany({
+          where: { id: { in: eventIds } },
+          select: { id: true, title: true },
+        })
+      : [];
+    const eventTitle = new Map(events.map((e) => [e.id, e.title]));
+
+    return res.json({
+      pending: intents.map((i) => ({
+        id: i.id,
+        reference: i.reference,
+        kind: i.kind,
+        status: i.status,
+        eventId: i.eventId,
+        eventTitle: eventTitle.get(i.eventId) ?? null,
+        amountKobo: i.amountKobo,
+        chargeAmount: i.chargeAmount,
+        email: emailFromIntentPayload(i.payload),
+        paystackStatus: i.paystackStatus,
+        createdAt: i.createdAt,
+      })),
+      count: intents.length,
+      note: 'Includes abandoned checkouts until Retry marks them failed. Only paid ones get tickets.',
+    });
+  } catch (error: any) {
+    console.error('[Paystack Pending]', error);
+    return res.status(500).json({ message: error.message || 'Failed to list pending payments' });
+  }
+};
+
+/**
+ * Admin: verify each recent PENDING intent with Paystack.
+ * - success → fulfill tickets
+ * - abandoned / failed / reversed → mark FAILED (drops off stuck list)
+ * - ongoing → leave PENDING
+ * POST /admin/payments/sweep-pending
+ */
+export const sweepPendingPaymentIntents = async (_req: AuthRequest, res: Response) => {
+  try {
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      return res.status(400).json({ message: 'Paystack is not configured' });
+    }
+
+    const now = Date.now();
+    const minCreatedAt = new Date(now - PENDING_MAX_AGE_MS);
+    const maxCreatedAt = new Date(now - PENDING_MIN_AGE_MS);
+
+    await prisma.paymentIntent.updateMany({
+      where: {
+        status: 'PENDING',
+        amountKobo: { gt: 0 },
+        createdAt: { lt: minCreatedAt },
+      },
+      data: { status: 'FAILED', paystackStatus: 'expired_unpaid' },
+    });
+
+    const intents = await prisma.paymentIntent.findMany({
+      where: {
+        status: 'PENDING',
+        amountKobo: { gt: 0 },
+        createdAt: { gt: minCreatedAt, lt: maxCreatedAt },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+    });
+
+    const results: Array<{
+      reference: string;
+      outcome: 'fulfilled' | 'still_pending' | 'abandoned' | 'failed';
+      message?: string;
+      email?: string | null;
+    }> = [];
+
+    for (const intent of intents) {
+      const email = emailFromIntentPayload(intent.payload);
+      try {
+        const paystack = await verifyPaystackTransaction(intent.reference);
+        const ps = String(paystack.status || '').toLowerCase();
+
+        if (ps === 'success') {
+          if (paystack.amount && paystack.amount < intent.amountKobo) {
+            await markIntentFailed(intent.id, `amount_mismatch:${paystack.amount}`);
+            results.push({
+              reference: intent.reference,
+              outcome: 'failed',
+              message: `Paid ${paystack.amount} kobo < expected ${intent.amountKobo}`,
+              email,
+            });
+            continue;
+          }
+          await fulfillPaymentIntent(intent.reference, paystack.status);
+          results.push({
+            reference: intent.reference,
+            outcome: 'fulfilled',
+            message: `Fulfilled; email → ${email || 'unknown'}`,
+            email,
+          });
+          continue;
+        }
+
+        if (PAYSTACK_DEAD_STATUSES.has(ps) || ps.startsWith('fail')) {
+          await markIntentFailed(intent.id, ps || 'abandoned');
+          results.push({
+            reference: intent.reference,
+            outcome: 'abandoned',
+            message: `Marked failed (${ps || 'abandoned'}) — not paid`,
+            email,
+          });
+          continue;
+        }
+
+        // ongoing / pending on Paystack — leave alone
+        await prisma.paymentIntent.update({
+          where: { id: intent.id },
+          data: { paystackStatus: paystack.status },
+        });
+        results.push({
+          reference: intent.reference,
+          outcome: 'still_pending',
+          message: `Paystack still ${ps || 'unknown'}`,
+          email,
+        });
+      } catch (err: any) {
+        results.push({
+          reference: intent.reference,
+          outcome: 'failed',
+          message: err.message || 'Sweep failed for this reference',
+          email,
+        });
+      }
+    }
+
+    return res.json({
+      scanned: intents.length,
+      fulfilled: results.filter((r) => r.outcome === 'fulfilled').length,
+      abandoned: results.filter((r) => r.outcome === 'abandoned').length,
+      stillPending: results.filter((r) => r.outcome === 'still_pending').length,
+      failed: results.filter((r) => r.outcome === 'failed').length,
+      results,
+    });
+  } catch (error: any) {
+    console.error('[Paystack Sweep]', error);
+    return res.status(500).json({ message: error.message || 'Sweep failed' });
+  }
+};
+
 /**
  * Admin: resolve a payment reference (verify + fulfill if needed)
  * POST /admin/payments/resolve { reference }
@@ -609,11 +820,29 @@ export const resolvePaystackPayment = async (req: AuthRequest, res: Response) =>
       });
     }
 
+    const ps = String(paystack?.status || '').toLowerCase();
+    if (
+      intent.status === 'PENDING' &&
+      paystack?.status &&
+      (PAYSTACK_DEAD_STATUSES.has(ps) || ps.startsWith('fail'))
+    ) {
+      await markIntentFailed(intent.id, ps);
+      return res.json({
+        found: true,
+        resolved: false,
+        abandoned: true,
+        reference,
+        intent: await prisma.paymentIntent.findUnique({ where: { reference: String(reference) } }),
+        paystack,
+        message: `Not paid — marked failed (${ps}). No tickets to issue.`,
+      });
+    }
+
     return res.json({
       found: true,
       resolved: intent.status === 'FULFILLED',
       reference,
-      intent,
+      intent: await prisma.paymentIntent.findUnique({ where: { reference: String(reference) } }),
       paystack,
     });
   } catch (error: any) {

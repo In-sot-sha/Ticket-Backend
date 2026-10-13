@@ -60,29 +60,63 @@ export type VendorCheckoutPayload = {
   staffCount?: number;
 };
 
-async function sendTicketEmail(params: {
+function absoluteAssetUrl(url?: string | null): string | null {
+  if (!url?.trim()) return null;
+  const u = url.trim();
+  if (/^https?:\/\//i.test(u)) return u;
+  const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
+    /\/$/,
+    '',
+  );
+  return `${base}${u.startsWith('/') ? '' : '/'}${u}`;
+}
+
+/** Send confirmation email with per-ticket PDF attachments + optional host branding. */
+export async function sendTicketEmail(params: {
   email: string;
-  event: { title: string; startDate: Date | null; location: string | null };
+  event: {
+    title: string;
+    startDate: Date | null;
+    location: string | null;
+    imageUrl?: string | null;
+  };
   ticketType: { name: string; ticketStyle?: string | null; accentColor?: string | null };
   tickets: Array<{
     id: number;
     qrCode: string;
-    ticketType?: { name?: string; accentColor?: string | null } | null;
+    ticketType?: {
+      name?: string;
+      accentColor?: string | null;
+      ticketStyle?: string | null;
+    } | null;
   }>;
   totalPrice: number;
   quantity: number;
-}) {
+  organizerName?: string | null;
+  organizerLogo?: string | null;
+}): Promise<boolean> {
   try {
     const { generateTicketConfirmationEmail, sendEmail } = await import('./email');
+    const eventDate = params.event.startDate
+      ? new Date(params.event.startDate).toLocaleDateString()
+      : 'TBA';
+    const eventTime = params.event.startDate
+      ? new Date(params.event.startDate).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null;
+    const eventLocation = params.event.location || 'TBA';
     const emailContent = generateTicketConfirmationEmail(params.email, {
       ticketId: params.tickets
         .map((t) => `TKT-${t.id.toString().padStart(6, '0')}`)
         .join(' · '),
       eventTitle: params.event.title,
-      eventDate: params.event.startDate
-        ? new Date(params.event.startDate).toLocaleDateString()
-        : 'TBA',
-      eventLocation: params.event.location || 'TBA',
+      eventDate,
+      eventTime,
+      eventLocation,
+      eventImageUrl: absoluteAssetUrl(params.event.imageUrl),
+      organizerLogoUrl: absoluteAssetUrl(params.organizerLogo),
       ticketType: params.ticketType.name,
       quantity: params.quantity,
       totalPrice: params.totalPrice,
@@ -95,15 +129,162 @@ async function sendTicketEmail(params: {
         accentColor: t.ticketType?.accentColor || params.ticketType.accentColor,
       })),
     });
-    await sendEmail({
+
+    let attachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
+    try {
+      const { buildTicketPdfAttachments } = await import('./ticketPdf');
+      attachments = await buildTicketPdfAttachments(
+        params.tickets
+          .filter((t) => t.qrCode)
+          .map((t) => ({
+            id: t.id,
+            qrCode: t.qrCode,
+            ticketTypeName: t.ticketType?.name || params.ticketType.name,
+            eventTitle: params.event.title,
+            eventDate,
+            eventTime,
+            eventLocation,
+            eventImageUrl: absoluteAssetUrl(params.event.imageUrl),
+            accentColor: t.ticketType?.accentColor || params.ticketType.accentColor,
+            ticketStyle: t.ticketType?.ticketStyle || params.ticketType.ticketStyle,
+            organizerLogoUrl: absoluteAssetUrl(params.organizerLogo),
+          })),
+      );
+    } catch (pdfErr) {
+      console.error('[Email] Ticket PDF generation failed (sending without PDF):', pdfErr);
+    }
+
+    return await sendEmail({
       to: params.email,
       subject: emailContent.subject,
       html: emailContent.html,
       text: emailContent.text,
+      attachments: attachments.length ? attachments : undefined,
     });
   } catch (err) {
     console.error('Failed to send ticket confirmation email:', err);
+    return false;
   }
+}
+
+/**
+ * Admin: resend all tickets on an order to a delivery email.
+ * Updates user.email when the address is free; otherwise still sends and returns a warning.
+ */
+export async function resendOrderTickets(input: {
+  orderId: number;
+  email: string;
+  adminUserId?: number;
+}): Promise<{
+  emailSent: boolean;
+  whatsappAttempted: boolean;
+  deliveredTo: string;
+  previousEmail: string | null;
+  userEmailUpdated: boolean;
+  warning?: string;
+  ticketCount: number;
+}> {
+  const cleanEmail = String(input.email || '').trim().toLowerCase();
+  if (!isValidEmail(cleanEmail)) {
+    throw Object.assign(new Error('A valid email address is required'), { status: 400 });
+  }
+
+  const order = await prisma.order.findUnique({
+    where: { id: input.orderId },
+    include: {
+      user: true,
+      event: { include: { organization: { select: { name: true, logo: true } } } },
+      tickets: { include: { ticketType: true } },
+    },
+  });
+  if (!order) {
+    throw Object.assign(new Error('Order not found'), { status: 404 });
+  }
+  if (!order.tickets.length) {
+    throw Object.assign(new Error('This order has no tickets to resend'), { status: 400 });
+  }
+
+  const previousEmail = order.user?.email ?? null;
+  let userEmailUpdated = false;
+  let warning: string | undefined;
+
+  if (order.userId) {
+    const conflict = await prisma.user.findFirst({
+      where: {
+        email: cleanEmail,
+        NOT: { id: order.userId },
+      },
+      select: { id: true },
+    });
+    if (conflict) {
+      warning =
+        'Email already belongs to another account — tickets were sent to it, but the buyer profile email was not changed.';
+    } else if (previousEmail?.toLowerCase() !== cleanEmail) {
+      await prisma.user.update({
+        where: { id: order.userId },
+        data: { email: cleanEmail },
+      });
+      userEmailUpdated = true;
+    }
+  }
+
+  const typeNames = [
+    ...new Set(order.tickets.map((t) => t.ticketType?.name || 'General Admission')),
+  ];
+  const primary = order.tickets[0]?.ticketType;
+  const emailSent = await sendTicketEmail({
+    email: cleanEmail,
+    event: order.event,
+    ticketType: {
+      name: typeNames.join(' · '),
+      ticketStyle: primary?.ticketStyle,
+      accentColor: primary?.accentColor,
+    },
+    tickets: order.tickets,
+    totalPrice: order.chargeAmount || order.totalAmount,
+    quantity: order.tickets.length,
+    organizerName: order.event.organization?.name,
+    organizerLogo: order.event.organization?.logo,
+  });
+
+  let whatsappAttempted = false;
+  if (order.user?.phone) {
+    whatsappAttempted = true;
+    const { deliverTicketsViaWhatsApp } = await import('./whatsapp');
+    await deliverTicketsViaWhatsApp({
+      phone: order.user.phone,
+      orderId: order.id,
+      eventTitle: order.event.title,
+      eventDate: order.event.startDate
+        ? new Date(order.event.startDate).toLocaleDateString()
+        : 'TBA',
+      eventLocation: order.event.location || 'TBA',
+      tickets: order.tickets.map((t) => ({
+        id: t.id,
+        qrCode: t.qrCode,
+        ticketTypeName: t.ticketType?.name || 'General Admission',
+      })),
+    }).catch((err) => console.error('[WhatsApp] Admin resend delivery failed:', err));
+  }
+
+  console.log(
+    `[ADMIN AUDIT] Admin (ID: ${input.adminUserId ?? '?'}) resent order ${order.id} tickets to ${cleanEmail}` +
+      ` (was ${previousEmail ?? 'none'}; userEmailUpdated=${userEmailUpdated}; emailSent=${emailSent})`,
+  );
+
+  if (!emailSent) {
+    throw Object.assign(new Error('Failed to send ticket email'), { status: 500 });
+  }
+
+  return {
+    emailSent,
+    whatsappAttempted,
+    deliveredTo: cleanEmail,
+    previousEmail,
+    userEmailUpdated,
+    warning,
+    ticketCount: order.tickets.length,
+  };
 }
 
 export async function fulfillTicketCheckout(input: {
@@ -290,6 +471,8 @@ export async function fulfillTicketCheckout(input: {
     tickets: result.tickets,
     totalPrice: fees.chargeAmount || fees.subtotal,
     quantity,
+    organizerName: event.organization?.name,
+    organizerLogo: event.organization?.logo,
   });
 
   const { deliverTicketsViaWhatsApp } = await import('./whatsapp');

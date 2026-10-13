@@ -13,17 +13,23 @@ import {
   getSupportTickets,
   getSupportTicketById,
   replyToSupportTicket,
+  resendSupportReplyEmail,
   updateSupportTicket,
   getAdminEvents,
   promoteEvent,
   updateOrganizationFee,
   updateTicketTypePlatformFee,
+  resendOrderTicketsAdmin,
   getPayoutRequests,
   getPaystackSettlements,
   approvePayout,
   rejectPayout,
 } from '../controllers/admin';
-import { resolvePaystackPayment } from '../controllers/paystackPayment';
+import {
+  resolvePaystackPayment,
+  listPendingPaymentIntents,
+  sweepPendingPaymentIntents,
+} from '../controllers/paystackPayment';
 import {
   getWhatsAppAdminConfig,
   getWhatsAppMessages,
@@ -67,9 +73,13 @@ router.get('/settlements', getPaystackSettlements);
 router.post('/payouts/:id/approve', approvePayout);
 router.post('/payouts/:id/reject', rejectPayout);
 router.post('/payments/resolve', resolvePaystackPayment);
+router.get('/payments/pending', listPendingPaymentIntents);
+router.post('/payments/sweep-pending', sweepPendingPaymentIntents);
+router.post('/orders/:orderId/resend-tickets', resendOrderTicketsAdmin);
 router.get('/support/tickets', getSupportTickets);
 router.get('/support/tickets/:id', getSupportTicketById);
 router.post('/support/tickets/:id/replies', replyToSupportTicket);
+router.post('/support/tickets/:id/replies/:messageId/resend', resendSupportReplyEmail);
 router.put('/support/tickets/:id', updateSupportTicket);
 router.get('/whatsapp', getWhatsAppAdminConfig);
 router.put('/whatsapp', putWhatsAppAdminConfig);

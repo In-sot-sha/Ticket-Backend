@@ -3,7 +3,6 @@ import {
   sendEmail,
   generateOTPEmail,
   generateWelcomeEmail,
-  generateTicketConfirmationEmail,
   emailLayout,
   getEmailPreview,
   EMAIL_PREVIEW_IDS,
@@ -131,7 +130,7 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
     const ticket = await prisma.ticket.findUnique({
       where: { id: ticketId },
       include: {
-        event: true,
+        event: { include: { organization: { select: { name: true, logo: true } } } },
         user: true,
         ticketType: true,
       },
@@ -149,47 +148,35 @@ export const sendTicketConfirmation = async (req: AuthRequest, res: Response) =>
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    const eventDate = new Date(ticket.event.startDate).toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    const eventDate = ticket.event.startDate
+      ? new Date(ticket.event.startDate).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : 'TBA';
 
     if (!ticket.user?.email) {
       return res.status(400).json({ message: 'This ticket has no email on file.' });
     }
 
-    const emailTemplate = generateTicketConfirmationEmail(ticket.user.email, {
-      ticketId: `TKT-${ticket.id.toString().padStart(6, '0')}`,
-      eventTitle: ticket.event.title,
-      eventDate,
-      eventLocation: ticket.event.location || 'Online',
-      ticketType: ticket.ticketType?.name || 'General Admission',
-      quantity: 1,
+    const { sendTicketEmail } = await import('../services/checkoutFulfillment');
+    const sent = await sendTicketEmail({
+      email: ticket.user.email,
+      event: ticket.event,
+      ticketType: {
+        name: ticket.ticketType?.name || 'General Admission',
+        ticketStyle: ticket.ticketType?.ticketStyle,
+        accentColor: ticket.ticketType?.accentColor,
+      },
+      tickets: [ticket],
       totalPrice: ticket.ticketType?.price || 0,
-      qrCode: ticket.qrCode || undefined,
-      ticketStyle: ticket.ticketType?.ticketStyle,
-      accentColor: ticket.ticketType?.accentColor,
-      passes: ticket.qrCode
-        ? [
-            {
-              label: `TKT-${ticket.id.toString().padStart(6, '0')}`,
-              qrCode: ticket.qrCode,
-              ticketType: ticket.ticketType?.name || 'General Admission',
-              accentColor: ticket.ticketType?.accentColor,
-            },
-          ]
-        : undefined,
-    });
-
-    const sent = await sendEmail({
-      to: ticket.user.email,
-      subject: emailTemplate.subject,
-      html: emailTemplate.html,
-      text: emailTemplate.text,
+      quantity: 1,
+      organizerName: ticket.event.organization?.name,
+      organizerLogo: ticket.event.organization?.logo,
     });
 
     if (!sent) {

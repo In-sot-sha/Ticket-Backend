@@ -4,6 +4,10 @@ import nodemailer from 'nodemailer';
 
 const SITE_URL = (process.env.FRONTEND_URL || 'https://partystorm.ng').replace(/\/$/, '');
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'partystormevents@gmail.com';
+const SUPPORT_WHATSAPP = (process.env.SUPPORT_WHATSAPP || '2347030152798').replace(/\D/g, '');
+const SUPPORT_INSTAGRAM_URL =
+  process.env.SUPPORT_INSTAGRAM_URL || 'https://www.instagram.com/partystorm.ng';
+const WHATSAPP_URL = `https://wa.me/${SUPPORT_WHATSAPP}`;
 const DEFAULT_FROM =
   process.env.EMAIL_FROM || `PartyStorm <noreply@partystorm.ng>`;
 
@@ -18,6 +22,12 @@ const ASSET_BASE = (process.env.EMAIL_ASSET_BASE || SITE_URL).replace(/\/$/, '')
 const LOGO_URL = process.env.EMAIL_LOGO_URL || '';
 const ICON_URL = `${ASSET_BASE}/email-icon.png`;
 
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+}
+
 export interface EmailOptions {
   to: string;
   subject: string;
@@ -27,6 +37,8 @@ export interface EmailOptions {
   replyTo?: string;
   /** Override display name, e.g. "Acme via PartyStorm" */
   fromName?: string;
+  /** Optional file attachments (e.g. ticket PDFs) */
+  attachments?: EmailAttachment[];
 }
 
 export type EmailTemplate = {
@@ -53,9 +65,6 @@ export function emailLayout(opts: {
   const headerRight = opts.eyebrow
     ? `<span style="color:#7b7d81;">${opts.eyebrow}</span>`
     : '';
-  const reason =
-    opts.reason ||
-    'You received this email because of activity on your PartyStorm account or tickets.';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -70,11 +79,14 @@ export function emailLayout(opts: {
       body, .email-bg { background-color: #ffffff !important; }
       .email-outer { padding: 0 !important; background-color: #ffffff !important; }
       .email-shell { width: 100% !important; max-width: 100% !important; border-radius: 0px !important; border: none !important; box-shadow: none !important; }
-      .email-pad { padding-left: 16px !important; padding-right: 16px !important; }
-      .email-header-pad { padding: 16px 16px 8px 16px !important; }
-      .email-body-pad { padding: 8px 16px 16px 16px !important; }
-      .email-footer-pad { padding: 24px 16px !important; }
-      .email-hero-title { font-size: 24px !important; line-height: 1.25 !important; }
+      .email-pad { padding-left: 10px !important; padding-right: 10px !important; }
+      .email-header-pad { padding: 12px 10px 6px 10px !important; }
+      .email-body-pad { padding: 4px 10px 10px 10px !important; }
+      .email-footer-pad { padding: 12px 10px 14px 10px !important; }
+      .email-hero-title { font-size: 22px !important; line-height: 1.25 !important; }
+      .ticket-photo-pad { padding: 12px 12px 14px 12px !important; }
+      .ticket-stub-pad { padding: 12px 10px 14px 10px !important; }
+      .ticket-title { font-size: 18px !important; }
     }
   </style>
   <!--[if mso]>
@@ -89,7 +101,7 @@ export function emailLayout(opts: {
         <table class="email-shell" role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;margin:0 auto;border-collapse:collapse;border-radius:16px;overflow:hidden;border:1px solid #e5e7eb;">
           <!-- Header -->
           <tr>
-            <td class="email-pad email-header-pad" style="background-color:#ffffff;padding:20px 24px 8px 24px;">
+            <td class="email-pad email-header-pad" style="background-color:#ffffff;padding:16px 20px 6px 20px;">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
                 <tr>
                   <td style="vertical-align:middle;padding:4px 0;">
@@ -110,31 +122,26 @@ export function emailLayout(opts: {
           </tr>
           <!-- Body -->
           <tr>
-            <td class="email-pad email-body-pad" style="background-color:#ffffff;padding:8px 24px 16px 24px;font-family:${FONT};color:#14171e;font-size:15px;line-height:1.6;text-align:left;">
+            <td class="email-pad email-body-pad" style="background-color:#ffffff;padding:6px 20px 12px 20px;font-family:${FONT};color:#14171e;font-size:15px;line-height:1.6;text-align:left;">
               ${opts.bodyHtml}
             </td>
           </tr>
           <!-- Footer -->
           <tr>
-            <td class="email-pad email-footer-pad" style="background-color:#ffffff;padding:24px 24px;text-align:center;font-family:${FONT};">
-              <p style="margin:0 auto 16px auto;max-width:280px;font-size:13px;line-height:1.5;color:#7b7d81;text-align:center;">
-                PartyStorm is events and tickets across Nigeria. Discover nights out, book securely, and manage your passes in one place.
+            <td class="email-pad email-footer-pad" style="background-color:#ffffff;padding:16px 24px 20px 24px;text-align:center;font-family:${FONT};border-top:1px solid #f0f0f2;">
+              <p style="margin:0 auto 10px auto;max-width:300px;font-size:12px;line-height:1.45;color:#7b7d81;text-align:center;">
+                Events &amp; tickets across Nigeria — book, get your QR, and show up.
               </p>
-              <p style="margin:0 0 16px 0;font-size:12px;line-height:1.5;text-align:center;">
-                <a href="${SITE_URL}/events" style="color:#7b7d81;text-decoration:none;">Events</a>
+              <p style="margin:0 0 8px 0;font-size:12px;line-height:1.5;text-align:center;">
+                <a href="${WHATSAPP_URL}" style="color:#25D366;text-decoration:none;font-weight:600;">WhatsApp</a>
+                <span style="color:#d4d4d8;">&nbsp;·&nbsp;</span>
+                <a href="${SUPPORT_INSTAGRAM_URL}" style="color:#7b7d81;text-decoration:none;font-weight:600;">Instagram</a>
                 <span style="color:#d4d4d8;">&nbsp;·&nbsp;</span>
                 <a href="${SITE_URL}/support" style="color:#7b7d81;text-decoration:none;">Support</a>
-                <span style="color:#d4d4d8;">&nbsp;·&nbsp;</span>
-                <a href="${SITE_URL}/help" style="color:#7b7d81;text-decoration:none;">Help</a>
               </p>
-              <p style="margin:0 0 8px 0;font-size:11px;line-height:1.5;color:#7b7d81;text-align:center;">
-                <a href="${SITE_URL}" style="color:#7b7d81;text-decoration:none;">partystorm.ng</a>
-                &nbsp;·&nbsp;
-                <a href="mailto:${SUPPORT_EMAIL}" style="color:#7b7d81;text-decoration:none;">${SUPPORT_EMAIL}</a>
-              </p>
-              <p style="margin:0;font-size:11px;line-height:1.5;color:#7b7d81;text-align:center;">
-                ${reason}<br />
-                © ${year} PartyStorm
+              <p style="margin:0;font-size:11px;line-height:1.5;color:#a1a1aa;text-align:center;">
+                <a href="${SITE_URL}" style="color:#a1a1aa;text-decoration:none;">partystorm.ng</a>
+                &nbsp;·&nbsp;© ${year} PartyStorm
               </p>
             </td>
           </tr>
@@ -182,10 +189,10 @@ export function emailButton(
 ): string {
   const bg = opts?.variant === 'rose' ? '#f43f5e' : '#14171e';
   return `
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px auto 0 auto;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:12px auto 0 auto;">
       <tr>
         <td align="center" style="border-radius:8px;background:${bg};">
-          <a href="${href}" target="_blank" style="display:inline-block;padding:14px 28px;font-family:${FONT};font-size:15px;font-weight:500;letter-spacing:-0.02em;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.4;">
+          <a href="${href}" target="_blank" style="display:inline-block;padding:12px 22px;font-family:${FONT};font-size:14px;font-weight:600;letter-spacing:-0.02em;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.4;">
             ${label}
           </a>
         </td>
@@ -298,6 +305,13 @@ export const sendEmail = async (options: EmailOptions): Promise<boolean> => {
       };
       if (options.text) payload.text = options.text;
       if (options.replyTo) payload.reply_to = options.replyTo;
+      if (options.attachments?.length) {
+        payload.attachments = options.attachments.map((a) => ({
+          filename: a.filename,
+          content: a.content.toString('base64'),
+          content_type: a.contentType || 'application/octet-stream',
+        }));
+      }
 
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -315,7 +329,12 @@ export const sendEmail = async (options: EmailOptions): Promise<boolean> => {
       }
 
       const data = (await res.json()) as { id?: string };
-      console.log('[Email] ✅ Resend:', { to: options.to, subject: options.subject, id: data.id });
+      console.log('[Email] ✅ Resend:', {
+        to: options.to,
+        subject: options.subject,
+        id: data.id,
+        attachments: options.attachments?.length || 0,
+      });
       return true;
     }
 
@@ -335,6 +354,11 @@ export const sendEmail = async (options: EmailOptions): Promise<boolean> => {
       html: options.html,
       text: options.text,
       replyTo: options.replyTo,
+      attachments: options.attachments?.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        contentType: a.contentType,
+      })),
     });
 
     console.log('[Email] ✅ SMTP:', {
@@ -394,69 +418,204 @@ function resolveAccent(
   accentColor?: string | null
 ): string {
   const ACCENTS: Record<string, string> = {
-    rose: '#f43f5e',
-    gold: '#eeb111',
-    emerald: '#10b981',
-    purple: '#8b5cf6',
+    rose: '#d85060',
+    gold: '#c49a1a',
+    emerald: '#059669',
+    purple: '#6d5a9a',
     midnight: '#1e293b',
-    ocean: '#0ea5e9',
+    ocean: '#0284c7',
   };
-  if (accentColor) return accentColor;
+  if (accentColor && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(accentColor.trim())) {
+    return accentColor.trim();
+  }
   const raw = (ticketStyle || 'classic-rose').toLowerCase();
-  const match = raw.match(/^(classic|boarding|stub)-([a-z]+)$/);
+  const match = raw.match(/^(classic|boarding|stub|cinema|folio)-([a-z]+)$/);
   if (match && ACCENTS[match[2]]) return ACCENTS[match[2]];
   if (ACCENTS[raw]) return ACCENTS[raw];
   return ACCENTS.rose;
 }
 
-/** Side notches (email-safe ticket look) */
-function ticketNotchRow(opts: {
-  contentHtml: string;
-  /** Parent bg so notch “cutouts” blend (email body is white) */
-  cutoutBg?: string;
+function inkOnHex(hex: string): '#ffffff' | '#0a0a0a' {
+  const raw = hex.replace('#', '');
+  if (raw.length < 6) return '#ffffff';
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luma > 0.55 ? '#0a0a0a' : '#ffffff';
+}
+
+function splitEventTitle(title: string): { first: string; rest: string } {
+  const parts = (title || 'Event').trim().split(/\s+/);
+  if (parts.length <= 1) return { first: parts[0] || 'Event', rest: '' };
+  return { first: parts[0], rest: parts.slice(1).join(' ') };
+}
+
+function layoutCopyFromStyle(ticketStyle?: string | null): {
+  headline: string;
+  sublabel: string;
+  venueLabel: string;
+} {
+  const raw = (ticketStyle || '').toLowerCase();
+  const layout = raw.split('-')[0];
+  const map: Record<string, { headline: string; sublabel: string; venueLabel: string }> = {
+    classic: { headline: 'COME AND JOIN', sublabel: 'Admit one', venueLabel: 'LIVE AT' },
+    boarding: { headline: "YOU'RE INVITED", sublabel: 'First class', venueLabel: 'VENUE' },
+    stub: { headline: 'LIVE SHOW', sublabel: 'Admit one', venueLabel: 'LIVE AT' },
+    cinema: { headline: 'NOW SHOWING', sublabel: 'Admit one', venueLabel: 'SCREEN' },
+    folio: { headline: 'EXHIBITION', sublabel: 'Admit one', venueLabel: 'VENUE' },
+  };
+  return map[layout] || map.classic;
+}
+
+/** One pass styled like the frontend EventTicketCard (stacked photo + accent QR). */
+function frontendTicketPassHtml(opts: {
+  eventTitle: string;
+  eventDate: string;
+  eventLocation: string;
+  eventTime?: string | null;
+  eventImageUrl?: string | null;
+  organizerLogoUrl?: string | null;
+  ticketTypeName: string;
+  label: string;
+  qrCode: string;
+  accent: string;
+  ticketStyle?: string | null;
+  index: number;
+  total: number;
 }): string {
-  const cut = opts.cutoutBg || '#ffffff';
+  const accent = opts.accent;
+  const onAccent = inkOnHex(accent);
+  const badgeBg = onAccent === '#ffffff' ? '#0a0a0a' : '#ffffff';
+  const badgeFg = onAccent === '#ffffff' ? '#ffffff' : '#0a0a0a';
+  const copy = layoutCopyFromStyle(opts.ticketStyle);
+  const split = splitEventTitle(opts.eventTitle);
+  const banner =
+    opts.eventImageUrl?.trim() ||
+    'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=1200&q=80';
+  const qrImg = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&ecc=M&margin=8&data=${encodeURIComponent(
+    opts.qrCode,
+  )}`;
+  const typeLabel =
+    opts.total > 1
+      ? `${opts.ticketTypeName} · ${opts.index + 1}/${opts.total}`
+      : opts.ticketTypeName;
+  const hostLogo = opts.organizerLogoUrl?.trim()
+    ? `<img src="${opts.organizerLogoUrl.trim()}" width="36" height="36" alt="" style="display:block;border:0;outline:none;width:36px;height:36px;border-radius:8px;object-fit:cover;background:#ffffff;" />`
+    : '';
 
   return `
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0;border-collapse:collapse;background:#f3f4f6;border-radius:14px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;border-collapse:separate;border-spacing:0;border-radius:16px;overflow:hidden;border:1px solid #e5e7eb;background:#171717;">
+      <!-- Photo header -->
       <tr>
-        <!-- Left notches -->
-        <td width="14" style="width:14px;vertical-align:top;background:#f3f4f6;">
-          <table role="presentation" width="14" cellpadding="0" cellspacing="0" border="0">
-            <tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr>
+        <td background="${banner}" bgcolor="#171717" style="background-image:url('${banner}');background-size:cover;background-position:center;background-color:#171717;">
+          <!--[if gte mso 9]>
+          <v:rect xmlns:v="urn:schemas-microsoft-com:vml" fill="true" stroke="false" style="width:552px;">
+          <v:fill type="frame" src="${banner}" color="#171717" />
+          <v:textbox style="mso-fit-shape-to-text:true" inset="0,0,0,0">
+          <![endif]-->
+          <div style="background:linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.55) 55%, rgba(0,0,0,0.35) 100%);">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+              <tr>
+                <td class="ticket-photo-pad" style="padding:14px 14px 16px 14px;">
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+                    <tr>
+                      <td style="vertical-align:middle;">
+                        <p style="margin:0;font-size:10px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:rgba(255,255,255,0.7);font-family:${FONT};">
+                          ${copy.headline}
+                        </p>
+                      </td>
+                      ${
+                        hostLogo
+                          ? `<td align="right" width="40" style="vertical-align:middle;padding-left:8px;">${hostLogo}</td>`
+                          : ''
+                      }
+                    </tr>
+                  </table>
+                  <p class="ticket-title" style="margin:10px 0 0 0;font-size:22px;font-weight:800;letter-spacing:-0.02em;line-height:1.15;text-transform:uppercase;font-family:${FONT};">
+                    <span style="color:${accent};">${split.first}</span>${
+                      split.rest
+                        ? ` <span style="color:#ffffff;">${split.rest}</span>`
+                        : ''
+                    }
+                  </p>
+                  <p style="margin:10px 0 0 0;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.5);font-family:${FONT};">
+                    ${copy.venueLabel}
+                  </p>
+                  <p style="margin:4px 0 0 0;font-size:13px;font-weight:700;line-height:1.35;color:#ffffff;font-family:${FONT};">
+                    ${opts.eventLocation || 'Venue TBA'}
+                  </p>
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-collapse:collapse;border-top:1px solid rgba(255,255,255,0.12);">
+                    <tr>
+                      <td style="padding-top:10px;vertical-align:top;width:50%;">
+                        <p style="margin:0;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.5);font-family:${FONT};">Date</p>
+                        <p style="margin:4px 0 0 0;font-size:12px;font-weight:700;color:#ffffff;font-family:${FONT};">${opts.eventDate || 'TBA'}</p>
+                      </td>
+                      ${
+                        opts.eventTime
+                          ? `<td style="padding-top:10px;vertical-align:top;width:50%;">
+                        <p style="margin:0;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.5);font-family:${FONT};">Time</p>
+                        <p style="margin:4px 0 0 0;font-size:12px;font-weight:700;color:#ffffff;font-family:${FONT};">${opts.eventTime}</p>
+                      </td>`
+                          : ''
+                      }
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </div>
+          <!--[if gte mso 9]>
+          </v:textbox></v:rect>
+          <![endif]-->
+        </td>
+      </tr>
+      <!-- Perforation -->
+      <tr>
+        <td bgcolor="#171717" style="padding:0;background-color:#171717;font-size:0;line-height:0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
             <tr>
-              <td align="left" style="font-size:0;line-height:0;">
-                <div style="width:14px;height:14px;border-radius:7px;background:${cut};margin-left:-7px;"></div>
-              </td>
-            </tr>
-            <tr><td style="height:48px;line-height:48px;font-size:0;">&nbsp;</td></tr>
-            <tr>
-              <td align="left" style="font-size:0;line-height:0;">
-                <div style="width:14px;height:14px;border-radius:7px;background:${cut};margin-left:-7px;"></div>
-              </td>
+              <td width="12" style="width:12px;font-size:0;line-height:0;">&nbsp;</td>
+              <td style="border-top:2px dashed rgba(255,255,255,0.35);font-size:0;line-height:0;height:2px;">&nbsp;</td>
+              <td width="12" style="width:12px;font-size:0;line-height:0;">&nbsp;</td>
             </tr>
           </table>
         </td>
-        <!-- Main -->
-        <td style="vertical-align:top;padding:4px 0;">
-          ${opts.contentHtml}
-        </td>
-        <!-- Right notches -->
-        <td width="14" style="width:14px;vertical-align:top;background:#f3f4f6;">
-          <table role="presentation" width="14" cellpadding="0" cellspacing="0" border="0">
-            <tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr>
+      </tr>
+      <!-- Accent stub / QR -->
+      <tr>
+        <td class="ticket-stub-pad" bgcolor="${accent}" style="background-color:${accent};padding:14px 14px 16px 14px;text-align:center;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 10px auto;border-collapse:collapse;">
             <tr>
-              <td align="right" style="font-size:0;line-height:0;">
-                <div style="width:14px;height:14px;border-radius:7px;background:${cut};margin-right:-7px;margin-left:auto;"></div>
-              </td>
-            </tr>
-            <tr><td style="height:48px;line-height:48px;font-size:0;">&nbsp;</td></tr>
-            <tr>
-              <td align="right" style="font-size:0;line-height:0;">
-                <div style="width:14px;height:14px;border-radius:7px;background:${cut};margin-right:-7px;margin-left:auto;"></div>
+              <td bgcolor="${badgeBg}" style="background-color:${badgeBg};border-radius:999px;padding:5px 12px;">
+                <p style="margin:0;font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:${badgeFg};font-family:${FONT};">
+                  ${typeLabel}
+                </p>
               </td>
             </tr>
           </table>
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;border-collapse:collapse;background:#ffffff;border-radius:12px;">
+            <tr>
+              <td style="padding:8px;background:#ffffff;border-radius:12px;">
+                <img
+                  src="${qrImg}"
+                  width="140"
+                  height="140"
+                  alt="QR for ${opts.label}"
+                  style="display:block;margin:0 auto;border:0;outline:none;width:140px;height:140px;background:#ffffff;"
+                />
+              </td>
+            </tr>
+          </table>
+          <p style="margin:12px 0 0 0;font-size:10px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:${onAccent};opacity:0.9;font-family:${FONT};">
+            Do not share ticket
+          </p>
+          <p style="margin:4px 0 0 0;font-size:11px;font-weight:700;color:${onAccent};font-family:${FONT};">
+            ${copy.sublabel}
+          </p>
+          <p style="margin:6px 0 0 0;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:${onAccent};opacity:0.75;">
+            ${opts.label}
+          </p>
         </td>
       </tr>
     </table>`;
@@ -478,10 +637,11 @@ export const generateTicketConfirmationEmail = (
     passes?: TicketPassForEmail[];
     ticketStyle?: string | null;
     accentColor?: string | null;
+    eventTime?: string | null;
+    eventImageUrl?: string | null;
+    organizerLogoUrl?: string | null;
   }
 ) => {
-  const accent = resolveAccent(ticketData.ticketStyle, ticketData.accentColor);
-
   const passes: TicketPassForEmail[] =
     ticketData.passes && ticketData.passes.length > 0
       ? ticketData.passes.map((p) => ({
@@ -502,148 +662,53 @@ export const generateTicketConfirmationEmail = (
     new Set(passes.map((p) => p.ticketType || ticketData.ticketType).filter(Boolean))
   );
   const mixedTypes = typeNames.length > 1;
+  const summaryTypes = mixedTypes ? typeNames.join(' · ') : ticketData.ticketType;
 
-  // Group passes by ticket type for clearer mixed-type orders
-  const groups: { type: string; accent: string; passes: TicketPassForEmail[] }[] = [];
-  for (const pass of passes) {
-    const type = pass.ticketType || ticketData.ticketType || 'General';
-    const gAccent = resolveAccent(ticketData.ticketStyle, pass.accentColor || ticketData.accentColor);
-    let group = groups.find((g) => g.type === type);
-    if (!group) {
-      group = { type, accent: gAccent, passes: [] };
-      groups.push(group);
-    }
-    group.passes.push(pass);
-  }
-
-  const qrBlock = (
-    pass: TicketPassForEmail,
-    index: number,
-    total: number,
-    typeAccent: string,
-    typeName: string
-  ) => {
-    const qrImg = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&ecc=M&margin=10&data=${encodeURIComponent(
-      pass.qrCode
-    )}`;
-    const heading =
-      total > 1
-        ? `${typeName} · ${index + 1}/${total}`
-        : typeName;
-    return `
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 ${
-        index < total - 1 ? '10px' : '0'
-      } 0;background:#ffffff;border-radius:10px;border-collapse:collapse;">
-        <tr>
-          <td align="center" style="padding:16px 12px;">
-            <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${typeAccent};">
-              ${heading}
-            </p>
-            <img
-              src="${qrImg}"
-              width="160"
-              height="160"
-              alt="QR for ${pass.label}"
-              style="display:block;margin:0 auto;border:0;outline:none;width:160px;height:160px;background:#ffffff;"
-            />
-            <p style="margin:8px 0 0 0;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#71717a;">
-              ${pass.label}
-            </p>
-          </td>
-        </tr>
-      </table>`;
-  };
-
-  const typeCards = groups
-    .map((group) => {
-      const body = `
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
-          <tr>
-            <td style="padding:16px 12px 8px 8px;">
-              <p style="margin:0 0 4px 0;font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${group.accent};">
-                ${group.type}
-              </p>
-              <p style="margin:0 0 6px 0;font-size:18px;font-weight:700;letter-spacing:-0.03em;color:#14171e;line-height:1.25;">
-                ${ticketData.eventTitle}
-              </p>
-              <p style="margin:0;font-size:12px;color:#52525b;line-height:1.45;">
-                ${ticketData.eventDate}<br />
-                ${ticketData.eventLocation}
-              </p>
-              <p style="margin:8px 0 0 0;font-size:12px;color:#71717a;">
-                ${group.passes.length} pass${group.passes.length > 1 ? 'es' : ''}
-              </p>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:4px 8px 12px 8px;">
-              ${group.passes
-                .map((p, i) =>
-                  qrBlock(p, i, group.passes.length, group.accent, group.type)
-                )
-                .join('')}
-            </td>
-          </tr>
-        </table>`;
-
-      return ticketNotchRow({
-        contentHtml: body,
-        cutoutBg: '#ffffff',
-      });
-    })
+  const ticketCards = passes
+    .map((pass, i) =>
+      frontendTicketPassHtml({
+        eventTitle: ticketData.eventTitle,
+        eventDate: ticketData.eventDate,
+        eventLocation: ticketData.eventLocation,
+        eventTime: ticketData.eventTime,
+        eventImageUrl: ticketData.eventImageUrl,
+        organizerLogoUrl: ticketData.organizerLogoUrl,
+        ticketTypeName: pass.ticketType || ticketData.ticketType,
+        label: pass.label,
+        qrCode: pass.qrCode,
+        accent: resolveAccent(ticketData.ticketStyle, pass.accentColor || ticketData.accentColor),
+        ticketStyle: ticketData.ticketStyle,
+        index: i,
+        total: passes.length,
+      }),
+    )
     .join('');
-
-  const summaryTypes = mixedTypes
-    ? typeNames.join(' · ')
-    : ticketData.ticketType;
 
   const passListText = passes
     .map(
       (p, i) =>
-        `  ${i + 1}. [${p.ticketType || ticketData.ticketType}] ${p.label} — QR: ${p.qrCode}`
+        `  ${i + 1}. [${p.ticketType || ticketData.ticketType}] ${p.label} — QR: ${p.qrCode}`,
     )
     .join('\n');
 
   return {
     subject: `Your tickets for ${ticketData.eventTitle}`,
     html: emailLayout({
-      eyebrow: 'Ticket confirmation',
-      preheader: `Your tickets for ${ticketData.eventTitle} are confirmed. Show each QR at the gate.`,
+      eyebrow: 'Tickets',
+      preheader: `Your tickets for ${ticketData.eventTitle} are ready.`,
       reason: `Ticket confirmation for ${userEmail}.`,
       bodyHtml: `
-        ${emailHeroTitle(
-          passes.length > 1 ? `${passes.length} tickets confirmed` : "You're in",
-          mixedTypes ? summaryTypes : 'Tickets confirmed'
-        )}
-        <p style="margin:0 auto 8px auto;max-width:420px;font-size:15px;line-height:1.55;color:#43454b;text-align:center;">
-          Your pass${passes.length > 1 ? 'es' : ''} for <strong style="color:#14171e;">${ticketData.eventTitle}</strong> ${
-            passes.length > 1 ? 'are' : 'is'
-          } ready.
-          ${
-            mixedTypes
-              ? 'Each ticket type is grouped below with its own QR codes.'
-              : passes.length > 1
-                ? 'Each ticket has its own QR — scan one per guest.'
-                : 'Save this email or open My tickets on your phone at the door.'
-          }
+        <h1 style="margin:0 0 6px 0;font-size:24px;font-weight:700;letter-spacing:-0.03em;line-height:1.2;font-family:${FONT};color:#14171e;text-align:center;">
+          You're in
+        </h1>
+        <p style="margin:0 auto 14px auto;max-width:400px;font-size:13px;line-height:1.45;color:#71717a;text-align:center;">
+          ${ticketData.eventTitle}${mixedTypes ? ` · ${summaryTypes}` : ''} · ${ticketData.quantity} pass${
+            ticketData.quantity === 1 ? '' : 'es'
+          } · ₦${Number(ticketData.totalPrice || 0).toLocaleString()}
         </p>
-        ${typeCards}
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 16px 0;border-collapse:collapse;">
-          <tr>
-            <td width="50%" style="padding:8px 0;">
-              <p style="margin:0;font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:0.06em;">Qty</p>
-              <p style="margin:4px 0 0 0;font-size:16px;font-weight:700;color:#14171e;">${ticketData.quantity}</p>
-            </td>
-            <td width="50%" align="right" style="padding:8px 0;">
-              <p style="margin:0;font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:0.06em;">Total</p>
-              <p style="margin:4px 0 0 0;font-size:18px;font-weight:700;color:${accent};">₦${Number(
-                ticketData.totalPrice || 0
-              ).toLocaleString()}</p>
-            </td>
-          </tr>
-        </table>
-        <p style="margin:0 0 4px 0;font-size:13px;color:#52525b;text-align:center;line-height:1.5;">
-          Brighten your screen and present each QR to staff.
+        ${ticketCards}
+        <p style="margin:0 0 8px 0;font-size:12px;color:#a1a1aa;text-align:center;">
+          PDF attached · do not share your QR
         </p>
         ${emailButton(`${SITE_URL}/my-tickets`, 'View my tickets')}
       `,
@@ -653,6 +718,7 @@ ${passListText}
 Date: ${ticketData.eventDate}
 Venue: ${ticketData.eventLocation}
 Qty: ${ticketData.quantity} · Total: ₦${Number(ticketData.totalPrice || 0).toLocaleString()}
+PDF ticket(s) attached for download.
 View: ${SITE_URL}/my-tickets`,
   };
 };
@@ -1427,30 +1493,36 @@ export function getEmailPreview(id: EmailPreviewId): EmailTemplate {
       return generateTicketConfirmationEmail('guest@example.com', {
         ticketId: 'TKT-000042 · TKT-000043 · TKT-000044',
         eventTitle: 'Afrobeats Night Lagos',
-        eventDate: 'Saturday, Aug 15, 2026, 08:00 PM',
+        eventDate: '15TH | AUGUST | 2026',
+        eventTime: '8:00 PM',
         eventLocation: 'Eko Convention Centre, Lagos',
+        eventImageUrl:
+          'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=1200&q=80',
+        organizerLogoUrl:
+          'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=100&q=80',
         ticketType: 'VIP',
         quantity: 3,
         totalPrice: 35000,
         ticketStyle: 'classic-rose',
+        accentColor: '#d85060',
         passes: [
           {
             label: 'TKT-000042',
             qrCode: 'QR-PREVIEW-VIP-000042',
             ticketType: 'VIP',
-            accentColor: '#f43f5e',
+            accentColor: '#d85060',
           },
           {
             label: 'TKT-000043',
             qrCode: 'QR-PREVIEW-VIP-000043',
             ticketType: 'VIP',
-            accentColor: '#f43f5e',
+            accentColor: '#d85060',
           },
           {
             label: 'TKT-000044',
             qrCode: 'QR-PREVIEW-REG-000044',
             ticketType: 'Regular',
-            accentColor: '#0ea5e9',
+            accentColor: '#0284c7',
           },
         ],
       });

@@ -368,6 +368,36 @@ export const getSupportTicketById = async (req: AuthRequest, res: Response) => {
   }
 };
 
+async function sendSupportReplyNotification(params: {
+  ticket: { id: number; contactName: string | null; contactEmail: string; subject: string };
+  body: string;
+  status: string;
+  needsMoreInfo?: boolean;
+}): Promise<boolean> {
+  const to = params.ticket.contactEmail?.trim();
+  if (!to) return false;
+  const supportUrl = `${frontendBase()}/support`;
+  if (params.status === 'RESOLVED') {
+    const tpl = generateSupportResolvedEmail({
+      name: params.ticket.contactName,
+      subject: params.ticket.subject,
+      ticketId: params.ticket.id,
+      note: params.body,
+      supportUrl,
+    });
+    return sendEmail({ to, subject: tpl.subject, html: tpl.html, text: tpl.text });
+  }
+  const tpl = generateSupportReplyEmail({
+    name: params.ticket.contactName,
+    subject: params.ticket.subject,
+    ticketId: params.ticket.id,
+    replyBody: params.body,
+    needsMoreInfo: Boolean(params.needsMoreInfo),
+    supportUrl,
+  });
+  return sendEmail({ to, subject: tpl.subject, html: tpl.html, text: tpl.text });
+}
+
 export const replyToSupportTicket = async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -379,6 +409,9 @@ export const replyToSupportTicket = async (req: AuthRequest, res: Response) => {
 
     const ticket = await prisma.supportTicket.findUnique({ where: { id } });
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+    if (ticket.status === 'CLOSED') {
+      return res.status(400).json({ message: 'This ticket is closed. Re-open it to send responses.' });
+    }
 
     const allowedStatuses = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
     const newStatus =
@@ -395,6 +428,7 @@ export const replyToSupportTicket = async (req: AuthRequest, res: Response) => {
           authorId: req.userId!,
           authorRole: 'ADMIN',
           body: body.trim(),
+          emailSent: false,
         },
         include: {
           author: { select: { id: true, firstName: true, lastName: true, role: true } },
@@ -406,32 +440,87 @@ export const replyToSupportTicket = async (req: AuthRequest, res: Response) => {
       }),
     ]);
 
-    const to = ticket.contactEmail;
-    if (to) {
-      const supportUrl = `${frontendBase()}/support`;
-      if (newStatus === 'RESOLVED') {
-        const tpl = generateSupportResolvedEmail({
-          name: ticket.contactName,
-          subject: ticket.subject,
-          ticketId: ticket.id,
-          note: body.trim(),
-          supportUrl,
-        });
-        void sendEmail({ to, subject: tpl.subject, html: tpl.html, text: tpl.text });
-      } else {
-        const tpl = generateSupportReplyEmail({
-          name: ticket.contactName,
-          subject: ticket.subject,
-          ticketId: ticket.id,
-          replyBody: body.trim(),
-          needsMoreInfo: Boolean(needsMoreInfo),
-          supportUrl,
-        });
-        void sendEmail({ to, subject: tpl.subject, html: tpl.html, text: tpl.text });
-      }
+    const emailSent = await sendSupportReplyNotification({
+      ticket,
+      body: body.trim(),
+      status: newStatus,
+      needsMoreInfo: Boolean(needsMoreInfo),
+    });
+
+    const reply = await prisma.supportTicketMessage.update({
+      where: { id: message.id },
+      data: {
+        emailSent,
+        emailSentAt: emailSent ? new Date() : null,
+      },
+      include: {
+        author: { select: { id: true, firstName: true, lastName: true, role: true } },
+      },
+    });
+
+    return res.json({
+      message: emailSent ? 'Reply sent' : 'Reply saved but email was not delivered',
+      reply,
+      emailSent,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/** Resend notification email for an admin reply when the original send failed. */
+export const resendSupportReplyEmail = async (req: AuthRequest, res: Response) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const messageId = Number(req.params.messageId);
+
+    const ticket = await prisma.supportTicket.findUnique({ where: { id: ticketId } });
+    if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+    if (ticket.status === 'CLOSED') {
+      return res.status(400).json({ message: 'This ticket is closed. Re-open it to resend emails.' });
     }
 
-    return res.json({ message: 'Reply sent', reply: message, emailSent: Boolean(to) });
+    const message = await prisma.supportTicketMessage.findFirst({
+      where: { id: messageId, ticketId },
+    });
+    if (!message) return res.status(404).json({ message: 'Reply not found' });
+    if (message.authorRole !== 'ADMIN') {
+      return res.status(400).json({ message: 'Only staff replies can be resent by email' });
+    }
+    if (message.emailSent === true) {
+      return res.status(400).json({ message: 'This reply email was already sent' });
+    }
+    if (!ticket.contactEmail?.trim()) {
+      return res.status(400).json({ message: 'No contact email on this ticket' });
+    }
+
+    const emailSent = await sendSupportReplyNotification({
+      ticket,
+      body: message.body,
+      status: ticket.status === 'RESOLVED' ? 'RESOLVED' : 'IN_PROGRESS',
+    });
+
+    const reply = await prisma.supportTicketMessage.update({
+      where: { id: message.id },
+      data: {
+        emailSent,
+        emailSentAt: emailSent ? new Date() : null,
+      },
+      include: {
+        author: { select: { id: true, firstName: true, lastName: true, role: true } },
+      },
+    });
+
+    if (!emailSent) {
+      return res.status(502).json({
+        message: 'Email still failed to send. Check SMTP / Resend settings.',
+        reply,
+        emailSent: false,
+      });
+    }
+
+    return res.json({ message: 'Email resent successfully', reply, emailSent: true });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
@@ -910,6 +999,36 @@ export const promoteEvent = async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/**
+ * Admin: resend order tickets to a (possibly corrected) email.
+ * POST /admin/orders/:orderId/resend-tickets { email }
+ */
+export const resendOrderTicketsAdmin = async (req: AuthRequest, res: Response) => {
+  try {
+    const orderId = Number(req.params.orderId);
+    if (!Number.isFinite(orderId) || orderId <= 0) {
+      return res.status(400).json({ message: 'Invalid order ID' });
+    }
+    const { email } = req.body || {};
+    const { resendOrderTickets } = await import('../services/checkoutFulfillment');
+    const result = await resendOrderTickets({
+      orderId,
+      email: String(email || ''),
+      adminUserId: req.userId,
+    });
+    return res.json({
+      message: result.warning
+        ? `Tickets resent to ${result.deliveredTo}. ${result.warning}`
+        : `Tickets resent to ${result.deliveredTo}`,
+      ...result,
+    });
+  } catch (error: any) {
+    console.error('[Admin] resendOrderTickets:', error);
+    const status = error.status || 500;
+    return res.status(status).json({ message: error.message || 'Failed to resend tickets' });
   }
 };
 

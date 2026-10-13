@@ -165,7 +165,11 @@ export const getMyTickets = async (req: AuthRequest, res: Response) => {
         userId: req.userId,
       },
       include: {
-        event: true,
+        event: {
+          include: {
+            organization: { select: { id: true, name: true, logo: true } },
+          },
+        },
         user: true,
         ticketType: true,
       },
@@ -252,6 +256,7 @@ export const purchaseTicket = async (req: AuthRequest, res: Response) => {
 
     const event = await prisma.event.findUnique({
       where: { id: eventId },
+      include: { organization: { select: { name: true, logo: true } } },
     });
 
     if (!event) {
@@ -325,35 +330,18 @@ export const purchaseTicket = async (req: AuthRequest, res: Response) => {
     }
     // Send email if user is logged in
     try {
-      if (req.userId) {
-        const user = await prisma.user.findUnique({ where: { id: req.userId } });
-        if (user && user.email) {
-          const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
-          const emailContent = generateTicketConfirmationEmail(user.email, {
-            ticketId: tickets.map((t) => `TKT-${t.id.toString().padStart(6, '0')}`).join(' · '),
-            eventTitle: event.title,
-            eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
-            eventLocation: event.location || 'TBA',
-            ticketType: ticketType.name,
-            quantity,
-            totalPrice: ticketType.price * quantity,
-            ticketStyle: ticketType.ticketStyle,
-            accentColor: ticketType.accentColor,
-            passes: tickets.map((t) => ({
-              label: `TKT-${t.id.toString().padStart(6, '0')}`,
-              qrCode: t.qrCode,
-              ticketType: t.ticketType?.name || ticketType.name,
-              accentColor: t.ticketType?.accentColor || ticketType.accentColor,
-            })),
-          });
-          
-          await sendEmail({
-            to: user.email,
-            subject: emailContent.subject,
-            html: emailContent.html,
-            text: emailContent.text,
-          });
-        }
+      if (buyer.email) {
+        const { sendTicketEmail } = await import('../services/checkoutFulfillment');
+        await sendTicketEmail({
+          email: buyer.email,
+          event,
+          ticketType,
+          tickets,
+          totalPrice: ticketType.price * quantity,
+          quantity,
+          organizerName: event.organization?.name,
+          organizerLogo: event.organization?.logo,
+        });
       }
     } catch (err) {
       console.error('Failed to send purchase ticket email:', err);
@@ -844,7 +832,11 @@ export const verifyTicketRecovery = async (req: AuthRequest, res: Response) => {
         userId: user.id,
       },
       include: {
-        event: true,
+        event: {
+          include: {
+            organization: { select: { id: true, name: true, logo: true } },
+          },
+        },
         ticketType: true,
       },
     });
@@ -1221,32 +1213,16 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
         const notifyEmail = att.email?.trim() || guestUser.email;
         if (notifyEmail) {
           try {
-            const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
-            const emailContent = generateTicketConfirmationEmail(notifyEmail, {
-              ticketId: String(ticket.id),
-              eventTitle: event.title,
-              eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
-              eventLocation: event.location || 'TBA',
-              ticketType: ticketType.name,
-              quantity: 1,
+            const { sendTicketEmail } = await import('../services/checkoutFulfillment');
+            await sendTicketEmail({
+              email: notifyEmail,
+              event,
+              ticketType,
+              tickets: [ticket],
               totalPrice: ticketType.price,
-              qrCode: ticket.qrCode,
-              ticketStyle: ticketType.ticketStyle,
-              accentColor: ticketType.accentColor,
-              passes: [
-                {
-                  label: `TKT-${ticket.id.toString().padStart(6, '0')}`,
-                  qrCode: ticket.qrCode,
-                  ticketType: ticketType.name,
-                  accentColor: ticketType.accentColor,
-                },
-              ],
-            });
-            await sendEmail({
-              to: notifyEmail,
-              subject: emailContent.subject,
-              html: emailContent.html,
-              text: emailContent.text,
+              quantity: 1,
+              organizerName: event.organization?.name,
+              organizerLogo: event.organization?.logo,
             });
           } catch (err) {
             console.error('Failed to send individual manual ticket email:', err);
@@ -1323,31 +1299,16 @@ export const manualTicket = async (req: AuthRequest, res: Response) => {
       const notifyEmail = buyerEmail?.trim() || guestUser.email;
       if (tickets.length > 0 && notifyEmail) {
         try {
-          const { generateTicketConfirmationEmail, sendEmail } = await import('../services/email');
-          const emailContent = generateTicketConfirmationEmail(notifyEmail, {
-            ticketId: tickets
-              .map((t) => `TKT-${t.id.toString().padStart(6, '0')}`)
-              .join(' · '),
-            eventTitle: event.title,
-            eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
-            eventLocation: event.location || 'TBA',
-            ticketType: ticketType.name,
-            quantity: qty,
+          const { sendTicketEmail } = await import('../services/checkoutFulfillment');
+          await sendTicketEmail({
+            email: notifyEmail,
+            event,
+            ticketType,
+            tickets,
             totalPrice: totalAmount,
-            ticketStyle: ticketType.ticketStyle,
-            accentColor: ticketType.accentColor,
-            passes: tickets.map((t) => ({
-              label: `TKT-${t.id.toString().padStart(6, '0')}`,
-              qrCode: t.qrCode,
-              ticketType: t.ticketType?.name || ticketType.name,
-              accentColor: t.ticketType?.accentColor || ticketType.accentColor,
-            })),
-          });
-          await sendEmail({
-            to: notifyEmail,
-            subject: emailContent.subject,
-            html: emailContent.html,
-            text: emailContent.text,
+            quantity: qty,
+            organizerName: event.organization?.name,
+            organizerLogo: event.organization?.logo,
           });
         } catch (err) {
           console.error('Failed to send manual ticket email:', err);

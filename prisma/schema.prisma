@@ -526,12 +526,15 @@ model SupportTicket {
 }
 
 model SupportTicketMessage {
-  id         Int      @id @default(autoincrement())
+  id         Int       @id @default(autoincrement())
   ticketId   Int
   authorId   Int?
-  authorRole String   @default("USER")
-  body       String   @db.Text
-  createdAt  DateTime @default(now())
+  authorRole String    @default("USER")
+  body       String    @db.Text
+  /** Whether the customer notification email was sent. Null = legacy / not applicable. */
+  emailSent  Boolean?
+  emailSentAt DateTime?
+  createdAt  DateTime  @default(now())
 
   ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   author User?         @relation(fields: [authorId], references: [id])

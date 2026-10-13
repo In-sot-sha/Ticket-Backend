@@ -5,6 +5,7 @@ import {
   getSupportTickets,
   getSupportTicketById,
   replyToSupportTicket,
+  resendSupportReplyEmail,
   updateSupportTicket,
 } from '../controllers/admin';
 
@@ -31,6 +32,12 @@ router.post(
   verifyToken,
   requireAdminOrActiveStaff,
   replyToSupportTicket
+);
+router.post(
+  '/support/tickets/:id/replies/:messageId/resend',
+  verifyToken,
+  requireAdminOrActiveStaff,
+  resendSupportReplyEmail
 );
 router.put(
   '/support/tickets/:id',
