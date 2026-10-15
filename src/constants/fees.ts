@@ -1,9 +1,16 @@
-/** PartyStorm platform fee: 6% per paid ticket/booth unit, min ₦100, max ₦2,000. */
-export const PLATFORM_FEE_RATE = 0.06;
-export const PLATFORM_FEE_MIN = 100;
-export const PLATFORM_FEE_MAX = 2000;
+/**
+ * PartyStorm checkout fee (published): 7.5% + ₦100 per paid ticket/booth unit.
+ * Free / RSVP (₦0) is never charged.
+ * Paystack (≈1.5% + ₦100) is settled from this take — not added again for the buyer.
+ */
+export const PLATFORM_FEE_RATE = 0.075;
+export const PLATFORM_FEE_FLAT = 100;
 
-/** Paystack local: 1.5% + ₦100 (flat waived under ₦2,500), capped at ₦2,000. */
+/** @deprecated Kept for older call sites; default formula no longer uses min/max. */
+export const PLATFORM_FEE_MIN = PLATFORM_FEE_FLAT;
+export const PLATFORM_FEE_MAX = 2_000_000;
+
+/** Paystack local (internal cost): 1.5% + ₦100 (flat waived under ₦2,500), capped at ₦2,000. */
 export const PAYSTACK_RATE = 0.015;
 export const PAYSTACK_FLAT = 100;
 export const PAYSTACK_FLAT_WAIVE_BELOW = 2500;
@@ -14,8 +21,8 @@ export const PROCESSING_FEE_RATE = PAYSTACK_RATE;
 export const PROCESSING_FEE_FLAT = PAYSTACK_FLAT;
 
 /**
- * PartyStorm take per unit.
- * Pass `platformFeeNaira` to override the default 6% · min ₦100 · max ₦2,000 formula.
+ * PartyStorm take / buyer checkout fee per unit.
+ * Pass `platformFeeNaira` to override the default 7.5% + ₦100 formula.
  */
 export function platformFeeForUnit(
   price: number,
@@ -25,10 +32,7 @@ export function platformFeeForUnit(
   if (platformFeeNaira != null && Number.isFinite(Number(platformFeeNaira))) {
     return Math.max(0, Math.round(Number(platformFeeNaira)));
   }
-  return Math.min(
-    PLATFORM_FEE_MAX,
-    Math.max(PLATFORM_FEE_MIN, Math.round(price * PLATFORM_FEE_RATE)),
-  );
+  return Math.round(price * PLATFORM_FEE_RATE) + PLATFORM_FEE_FLAT;
 }
 
 export function paystackLocalFee(amountNgn: number): number {
@@ -41,8 +45,9 @@ export type OrderFeeBreakdown = {
   /** Ticket / booth face value (what organizers sell). */
   subtotal: number;
   platformFee: number;
+  /** Estimated Paystack cost (borne by PartyStorm from platformFee). */
   processingFee: number;
-  /** Amount shown as Fee to the buyer (0 when absorb). */
+  /** Amount shown as Fee to the buyer (0 when absorb). Equals platformFee when passed through. */
   feeChargedToBuyer: number;
   /** Amount the buyer / payment provider should charge. */
   chargeAmount: number;
@@ -67,10 +72,9 @@ const emptyFees = (absorbFee: boolean): OrderFeeBreakdown => ({
 
 /**
  * Cart-level fees from summed face value + per-unit platform fees.
- * Paystack processing is applied once on the cart (not per line).
- * Pass-through: buyer pays face value + PartyStorm + Paystack. Organizer net is the face value.
- * Absorb: buyer pays face value only. Organizer net is face − PartyStorm take.
- * Paystack is always borne by the main (PartyStorm) account from that take.
+ * Pass-through: buyer pays face + unified fee (7.5% + ₦100). Organizer net is the face value.
+ * Absorb: buyer pays face only. Organizer net is face − PartyStorm take.
+ * Paystack is always settled from PartyStorm’s take (not added on top for the buyer).
  * Free / RSVP lines have ₦0 platform fee.
  */
 export function feesFromSubtotalAndPlatform(
@@ -86,32 +90,29 @@ export function feesFromSubtotalAndPlatform(
 
   const canAbsorb = absorbFee && safeSubtotal > 0;
   if (canAbsorb) {
-    const processingFee = Math.round(paystackLocalFee(safeSubtotal));
+    const chargeAmount = safeSubtotal;
+    const processingFee = Math.round(paystackLocalFee(chargeAmount));
     return {
       subtotal: safeSubtotal,
       platformFee: safePlatform,
       processingFee,
       feeChargedToBuyer: 0,
-      chargeAmount: safeSubtotal,
+      chargeAmount,
       // Organizer keeps face − PartyStorm take; Paystack comes out of our take.
       netAmount: Math.max(0, safeSubtotal - safePlatform),
       absorbFee: true,
     };
   }
 
-  const base = safeSubtotal + safePlatform;
-  let chargeAmount = base;
-  for (let i = 0; i < 5; i++) {
-    chargeAmount = base + paystackLocalFee(chargeAmount);
-  }
-  chargeAmount = Math.round(chargeAmount);
-  const processingFee = Math.max(0, chargeAmount - base);
+  // Unified fee only — do not stack Paystack again for the buyer.
+  const chargeAmount = safeSubtotal + safePlatform;
+  const processingFee = Math.round(paystackLocalFee(chargeAmount));
 
   return {
     subtotal: safeSubtotal,
     platformFee: safePlatform,
     processingFee,
-    feeChargedToBuyer: chargeAmount - safeSubtotal,
+    feeChargedToBuyer: safePlatform,
     chargeAmount,
     netAmount: safeSubtotal,
     absorbFee: false,
@@ -122,7 +123,7 @@ export function feesFromSubtotalAndPlatform(
  * Paystack split for one charge.
  * Always bearer = account so Paystack fees come from PartyStorm, not the organizer subaccount.
  *
- * Pass-through: main takes PartyStorm + Paystack (then Paystack deducts its fee → we net PartyStorm take).
+ * Pass-through: main takes the unified fee; Paystack deducts from that → we net fee − Paystack.
  * Absorb: main takes only the PartyStorm take (Paystack deducts from that → we net take − Paystack).
  * Subaccount gets charge − transaction_charge (= face, or face − take when absorbed).
  */
@@ -130,15 +131,8 @@ export function paystackTransactionSplit(fees: OrderFeeBreakdown): {
   transactionChargeKobo: number;
   bearer: 'account' | 'subaccount';
 } {
-  const absorb = fees.absorbFee && fees.subtotal > 0;
-  if (absorb) {
-    return {
-      transactionChargeKobo: Math.round(fees.platformFee * 100),
-      bearer: 'account',
-    };
-  }
   return {
-    transactionChargeKobo: Math.round((fees.platformFee + fees.processingFee) * 100),
+    transactionChargeKobo: Math.round(fees.platformFee * 100),
     bearer: 'account',
   };
 }
@@ -185,7 +179,7 @@ export function calculateCartOrderFees(
 
 /**
  * Legacy helper: fees from a gross face-value amount treated as one unit.
- * Prefer calculateUnitOrderFees when unit price + qty are known (min/max apply per unit).
+ * Prefer calculateUnitOrderFees when unit price + qty are known.
  */
 export function calculateOrderFees(grossAmount: number, absorbFee = false) {
   return calculateUnitOrderFees(grossAmount, grossAmount > 0 ? 1 : 0, absorbFee);

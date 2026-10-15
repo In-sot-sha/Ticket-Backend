@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -368,6 +368,8 @@ model TicketType {
   price          Float
   quantity       Int?
   eventId        Int // Foreign key to Event
+  /** Optional booking-page blurb (includes drink, early entry, etc.) */
+  description    String?  @db.Text
   ticketStyle    String   @default("rose") // Visual preset: rose, gold, emerald, purple, midnight, ocean
   accentColor    String? // Optional custom hex override for the ticket stub
   badgeText      String? // Custom label on the ticket stub (defaults to ticket name)

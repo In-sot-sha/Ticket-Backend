@@ -47,6 +47,7 @@ async function generateUniqueSlug(title: string, currentEventId?: number): Promi
 // Upstash Redis cache (feature-flagged via ENABLE_REDIS_CACHE env var)
 import { cacheGet, cacheSet, cacheFlushPattern } from '../utils/cache';
 
+
 type TicketSoldGroupRow = {
   ticketTypeId: number;
   status: TicketStatus;
@@ -364,6 +365,7 @@ export const getEvents = async (req: Request, res: Response) => {
             name: true,
             price: true,
             quantity: true,
+            description: true,
             ticketStyle: true,
             accentColor: true,
             badgeText: true,
@@ -485,7 +487,7 @@ export const getEvent = async (req: Request, res: Response) => {
       },
       ticketTypes: {
         select: {
-          id: true, name: true, price: true, quantity: true,
+          id: true, name: true, price: true, quantity: true, description: true,
           ticketStyle: true, accentColor: true, badgeText: true,
             ticketHeadline: true, venueLabel: true, ticketSublabel: true,
             platformFeeNaira: true, maxPerPerson: true, isPaused: true, validOn: true,
@@ -600,6 +602,7 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
       name: string;
       price?: string | number;
       quantity?: string | number;
+      description?: string | null;
       ticketStyle?: string;
       accentColor?: string;
       badgeText?: string;
@@ -711,6 +714,10 @@ export const createEvent = async (req: AuthRequest, res: Response) => {
             name: ticketType.name,
             price: parseFloat(String(ticketType.price ?? 0)),
             quantity: parseInt(String(ticketType.quantity ?? 0), 10),
+            description:
+              ticketType.description != null && String(ticketType.description).trim()
+                ? String(ticketType.description).trim().slice(0, 800)
+                : null,
             ticketStyle: ticketType.ticketStyle || 'rose',
             accentColor: ticketType.accentColor || null,
             badgeText: ticketType.badgeText || null,
@@ -818,6 +825,7 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
       name: string;
       price?: string | number;
       quantity?: string | number;
+      description?: string | null;
       ticketStyle?: string;
       accentColor?: string;
       badgeText?: string;
@@ -1013,6 +1021,12 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
         if (ticketType.ticketHeadline !== undefined) design.ticketHeadline = ticketType.ticketHeadline || null;
         if (ticketType.venueLabel !== undefined) design.venueLabel = ticketType.venueLabel || null;
         if (ticketType.ticketSublabel !== undefined) design.ticketSublabel = ticketType.ticketSublabel || null;
+        if (ticketType.description !== undefined) {
+          design.description =
+            ticketType.description != null && String(ticketType.description).trim()
+              ? String(ticketType.description).trim().slice(0, 800)
+              : null;
+        }
         if (ticketType.maxPerPerson !== undefined) {
           design.maxPerPerson = parseInt(String(ticketType.maxPerPerson), 10);
         }
@@ -1035,6 +1049,10 @@ export const updateEvent = async (req: AuthRequest, res: Response) => {
               name: ticketType.name,
               price: parseFloat(String(ticketType.price ?? 0)),
               quantity: parseInt(String(ticketType.quantity ?? 0), 10),
+              description:
+                ticketType.description != null && String(ticketType.description).trim()
+                  ? String(ticketType.description).trim().slice(0, 800)
+                  : null,
               ticketStyle: ticketType.ticketStyle || 'rose',
               accentColor: ticketType.accentColor || null,
               badgeText: ticketType.badgeText || null,
@@ -1163,6 +1181,7 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
             name: true,
             price: true,
             quantity: true,
+            description: true,
             ticketStyle: true,
             accentColor: true,
             badgeText: true,
@@ -1276,6 +1295,7 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
             name: true,
             price: true,
             quantity: true,
+            description: true,
             ticketStyle: true,
             accentColor: true,
             badgeText: true,

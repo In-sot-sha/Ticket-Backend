@@ -69,16 +69,26 @@ export const getDashboardStats = async (_req: AuthRequest, res: Response) => {
 export const getTransactions = async (req: AuthRequest, res: Response) => {
   try {
     const status = req.query.status as string | undefined;
+    const eventIdRaw = req.query.eventId as string | undefined;
+    const eventId =
+      eventIdRaw && eventIdRaw !== 'all' && !Number.isNaN(Number(eventIdRaw))
+        ? Number(eventIdRaw)
+        : undefined;
+    const q = ((req.query.q as string) || '').trim().toLowerCase();
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25));
     const skip = (page - 1) * limit;
 
-    const where = status && status !== 'all' ? { status: status as any } : {};
+    const where: Record<string, unknown> = {};
+    if (status && status !== 'all') where.status = status as any;
+    if (eventId) where.eventId = eventId;
 
     // For vendor applications, filter status by paymentStatus
-    const vendorWhere = status && status !== 'all' ? { paymentStatus: status as any } : {};
+    const vendorWhere: Record<string, unknown> = {};
+    if (status && status !== 'all') vendorWhere.paymentStatus = status as any;
+    if (eventId) vendorWhere.eventId = eventId;
 
-    const [orders, totalOrders, vendorApps, totalVendors] = await Promise.all([
+    const [orders, vendorApps] = await Promise.all([
       prisma.order.findMany({
         where,
         include: {
@@ -105,7 +115,6 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
         },
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.order.count({ where }),
       prisma.vendorApplication.findMany({
         where: vendorWhere,
         include: {
@@ -125,7 +134,6 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
         },
         orderBy: { appliedAt: 'desc' },
       }),
-      prisma.vendorApplication.count({ where: vendorWhere }),
     ]);
 
     // Format all to a common transaction representation
@@ -183,11 +191,34 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
     }));
 
     // Merge and sort by date descending
-    const merged = [...formattedOrders, ...formattedVendors].sort(
+    let merged = [...formattedOrders, ...formattedVendors].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
-    const total = totalOrders + totalVendors;
+    if (q) {
+      merged = merged.filter((tx) => {
+        const vendorType = 'vendorType' in tx ? (tx as { vendorType?: string | null }).vendorType : null;
+        const hay = [
+          String(tx.txId),
+          tx.id,
+          tx.status,
+          tx.type,
+          tx.detail,
+          tx.paymentReference,
+          tx.buyer?.name,
+          tx.buyer?.email,
+          tx.event?.title,
+          tx.event?.organization,
+          vendorType,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return hay.includes(q);
+      });
+    }
+
+    const total = merged.length;
     const paginated = merged.slice(skip, skip + limit);
 
     return res.json({
