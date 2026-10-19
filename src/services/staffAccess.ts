@@ -5,7 +5,8 @@ export type StaffCapability =
   | 'WALK_IN_SALE'
   | 'CHECK_IN'
   | 'GATE_MANAGE'
-  | 'SUPPORT';
+  | 'SUPPORT'
+  | 'FINANCE';
 
 export interface StaffAccessResult {
   allowed: boolean;
@@ -19,6 +20,7 @@ const ALL_CAPS: StaffCapability[] = [
   'CHECK_IN',
   'GATE_MANAGE',
   'SUPPORT',
+  'FINANCE',
 ];
 
 function parseCaps(raw: unknown): StaffCapability[] {

@@ -1,5 +1,9 @@
 import express, { Router } from 'express';
-import { verifyToken, requireAdminOrActiveStaff } from '../middleware/auth';
+import {
+  verifyToken,
+  requireAdminOrActiveStaff,
+  requireAdminOrFinanceStaff,
+} from '../middleware/auth';
 import { staffHome, requestOpsProject } from '../controllers/opsStaff';
 import {
   getSupportTickets,
@@ -8,11 +12,25 @@ import {
   resendSupportReplyEmail,
   updateSupportTicket,
 } from '../controllers/admin';
+import {
+  listCompanyBooks,
+  summarizeCompanyBooks,
+  createCompanyBook,
+  updateCompanyBook,
+  deleteCompanyBook,
+} from '../controllers/companyBooks';
 
 const router: Router = express.Router();
 
 router.get('/home', verifyToken, staffHome);
 router.post('/ops-request', verifyToken, requestOpsProject);
+
+/** Company books — admin or staff with FINANCE */
+router.get('/books/summary', verifyToken, requireAdminOrFinanceStaff, summarizeCompanyBooks);
+router.get('/books', verifyToken, requireAdminOrFinanceStaff, listCompanyBooks);
+router.post('/books', verifyToken, requireAdminOrFinanceStaff, createCompanyBook);
+router.put('/books/:id', verifyToken, requireAdminOrFinanceStaff, updateCompanyBook);
+router.delete('/books/:id', verifyToken, requireAdminOrFinanceStaff, deleteCompanyBook);
 
 /** Staff support inbox — same capabilities as admin support */
 router.get(

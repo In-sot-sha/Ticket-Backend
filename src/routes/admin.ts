@@ -53,6 +53,13 @@ import {
   removeStaffFromProject,
   transferEvent,
 } from '../controllers/opsStaff';
+import {
+  listCompanyBooks,
+  summarizeCompanyBooks,
+  createCompanyBook,
+  updateCompanyBook,
+  deleteCompanyBook,
+} from '../controllers/companyBooks';
 
 const router: Router = express.Router();
 
@@ -67,6 +74,11 @@ router.put('/host-applications/:id/fee', updateOrganizationFee);
 router.get('/users', getUsers);
 router.put('/users/:id/role', updateUserRole);
 router.get('/transactions', getTransactions);
+router.get('/books/summary', summarizeCompanyBooks);
+router.get('/books', listCompanyBooks);
+router.post('/books', createCompanyBook);
+router.put('/books/:id', updateCompanyBook);
+router.delete('/books/:id', deleteCompanyBook);
 router.get('/revenue', getRevenue);
 router.get('/payouts', getPayoutRequests);
 router.get('/settlements', getPaystackSettlements);

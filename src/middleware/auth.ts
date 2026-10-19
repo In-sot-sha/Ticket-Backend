@@ -140,3 +140,57 @@ export const requireAdminOrActiveStaff = async (
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+function parseStaffCapabilities(raw: unknown): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter(Boolean).map(String);
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch {
+      return raw.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+/** Admin always; staff only with active profile + FINANCE capability. */
+export const requireAdminOrFinanceStaff = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({ message: 'Access denied. No token provided.' });
+      return;
+    }
+
+    if (req.role === 'ADMIN') {
+      next();
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: {
+        isStaff: true,
+        staffProfile: { select: { active: true, capabilities: true } },
+      },
+    });
+
+    if (
+      user?.isStaff &&
+      user.staffProfile?.active !== false &&
+      parseStaffCapabilities(user.staffProfile?.capabilities).includes('FINANCE')
+    ) {
+      next();
+      return;
+    }
+
+    res.status(403).json({ message: 'Access denied. Finance staff or admin required.' });
+  } catch {
+    res.status(500).json({ message: 'Server error' });
+  }
+};

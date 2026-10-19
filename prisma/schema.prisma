@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -71,6 +71,11 @@ enum SupportTicketCategory {
   OTHER
 }
 
+enum BookEntryType {
+  INCOME
+  EXPENSE
+}
+
 model User {
   id             Int      @id @default(autoincrement())
   email          String?  @unique
@@ -107,6 +112,7 @@ model User {
   staffProjectAssignments StaffProjectAssignment[]
   ticketsSold            Ticket[]                 @relation("TicketsSold")
   auditLogs              AuditLog[]
+  companyBookEntries     CompanyBookEntry[]
 }
 
 model Organization {
@@ -655,6 +661,25 @@ model WhatsAppConfig {
   ticketPrice      Float    @default(10)
   otpPrice         Float    @default(10)
   updatedAt        DateTime @updatedAt
+}
+
+/** PartyStorm company books — manual income / expense (not marketplace sales). */
+model CompanyBookEntry {
+  id            Int           @id @default(autoincrement())
+  type          BookEntryType
+  amount        Float
+  category      String
+  description   String?       @db.Text
+  occurredAt    DateTime
+  paymentMethod String?
+  recordedById  Int
+  recordedBy    User          @relation(fields: [recordedById], references: [id])
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([type, occurredAt])
+  @@index([occurredAt])
+  @@index([recordedById])
 }
 
 /** Delivery log. Credentials stay in environment variables. */
