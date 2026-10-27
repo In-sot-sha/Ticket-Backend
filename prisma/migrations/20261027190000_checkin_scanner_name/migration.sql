@@ -1,0 +1,1 @@
+ALTER TABLE `TicketCheckIn` ADD COLUMN `scannerName` VARCHAR(191) NULL;

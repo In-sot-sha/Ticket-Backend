@@ -14,6 +14,7 @@ import {
 } from '../controllers/admin';
 import {
   listCompanyBooks,
+  listBookEvents,
   summarizeCompanyBooks,
   createCompanyBook,
   updateCompanyBook,
@@ -27,6 +28,7 @@ router.post('/ops-request', verifyToken, requestOpsProject);
 
 /** Company books — admin or staff with FINANCE */
 router.get('/books/summary', verifyToken, requireAdminOrFinanceStaff, summarizeCompanyBooks);
+router.get('/books/events', verifyToken, requireAdminOrFinanceStaff, listBookEvents);
 router.get('/books', verifyToken, requireAdminOrFinanceStaff, listCompanyBooks);
 router.post('/books', verifyToken, requireAdminOrFinanceStaff, createCompanyBook);
 router.put('/books/:id', verifyToken, requireAdminOrFinanceStaff, updateCompanyBook);

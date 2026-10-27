@@ -3,6 +3,7 @@ import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
 import { PLATFORM_FEE_RATE } from '../constants/fees';
 import { loadPaystackSettlementSnapshot } from '../services/paystack';
+import { clearStalePromotions } from '../services/promotions';
 import {
   sendEmail,
   generateSupportReplyEmail,
@@ -967,6 +968,7 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
 
 export const getAdminEvents = async (req: AuthRequest, res: Response) => {
   try {
+    await clearStalePromotions();
     const search = (req.query.search as string) || '';
     const events = await prisma.event.findMany({
       where: {
@@ -1015,6 +1017,22 @@ export const promoteEvent = async (req: AuthRequest, res: Response) => {
 
     if (isNaN(eventId) || eventId <= 0) {
       return res.status(400).json({ message: 'Invalid event ID' });
+    }
+
+    const existing = await prisma.event.findUnique({
+      where: { id: eventId },
+      select: { startDate: true, endDate: true },
+    });
+    if (!existing) {
+      return res.status(404).json({ message: 'Event not found' });
+    }
+
+    if (isPromoted) {
+      if (existing.endDate.getTime() < Date.now()) {
+        return res.status(400).json({
+          message: 'This event has ended, so it cannot be promoted.',
+        });
+      }
     }
 
     const event = await prisma.event.update({

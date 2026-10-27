@@ -10,6 +10,12 @@ function parseType(raw: unknown): BookEntryType | null {
   return null;
 }
 
+function parseEventId(raw: unknown): number | null {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
 function parseAmount(raw: unknown): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -23,22 +29,117 @@ function parseDate(raw: unknown): Date | null {
   return d;
 }
 
+function occurredRange(query: AuthRequest['query']): Prisma.DateTimeFilter | undefined {
+  const from = parseDate(query.from);
+  const to = parseDate(query.to);
+  if (!from && !to) return undefined;
+  const range: Prisma.DateTimeFilter = {};
+  if (from) range.gte = from;
+  if (to) {
+    const end = new Date(to);
+    end.setHours(23, 59, 59, 999);
+    range.lte = end;
+  }
+  return range;
+}
+
+/** What PartyStorm keeps after Paystack on an online sale. Gate cash is not included. */
+function ourCut(platformFee: number, processingFee = 0) {
+  const cut = Math.round((Number(platformFee) || 0) - (Number(processingFee) || 0));
+  return cut > 0 ? cut : 0;
+}
+
+type TicketCutEntry = {
+  id: string;
+  source: 'TICKET';
+  type: 'INCOME';
+  amount: number;
+  category: string;
+  description: string;
+  occurredAt: Date;
+  paymentMethod: string | null;
+  recordedBy: null;
+};
+
+function matchesTicketSearch(search: string, parts: string[]) {
+  if (!search) return true;
+  return parts.join(' ').toLowerCase().includes(search);
+}
+
+/** Online sales only. The cut is collected at checkout. Gate sales stay with the host. */
+async function loadTicketCuts(
+  query: AuthRequest['query'],
+  take?: number,
+): Promise<TicketCutEntry[]> {
+  const range = occurredRange(query);
+  const search = String(query.search || '').trim().toLowerCase();
+  const eventId = parseEventId(query.eventId);
+  const createdAt = range ? { createdAt: range } : {};
+  const eventWhere = eventId ? { eventId } : {};
+  const pageSize = take ?? 500;
+
+  const orders: Array<{
+    id: number;
+    platformFee: number;
+    processingFee: number;
+    createdAt: Date;
+    event: { title: string } | null;
+  }> = [];
+
+  let orderCursor: number | undefined;
+  const orderCap = take ?? 20000;
+
+  while (orders.length < orderCap) {
+    const batch = await prisma.order.findMany({
+      where: { status: 'PAID', platformFee: { gt: 0 }, ...eventWhere, ...createdAt },
+      select: {
+        id: true,
+        platformFee: true,
+        processingFee: true,
+        createdAt: true,
+        event: { select: { title: true } },
+      },
+      orderBy: { id: 'desc' },
+      take: Math.min(pageSize, orderCap - orders.length),
+      ...(orderCursor ? { skip: 1, cursor: { id: orderCursor } } : {}),
+    });
+    orders.push(...batch);
+    if (batch.length < pageSize || take != null) break;
+    orderCursor = batch[batch.length - 1]?.id;
+    if (!orderCursor) break;
+  }
+
+  const rows: TicketCutEntry[] = [];
+
+  for (const order of orders) {
+    const amount = ourCut(order.platformFee, order.processingFee);
+    if (amount <= 0) continue;
+    const title = order.event?.title || 'Event';
+    const description = `${title} · Order #${order.id}`;
+    if (!matchesTicketSearch(search, ['Ticket cut', 'ticket sale', description, title])) continue;
+    rows.push({
+      id: `order-${order.id}`,
+      source: 'TICKET',
+      type: 'INCOME',
+      amount,
+      category: 'Ticket cut',
+      description,
+      occurredAt: order.createdAt,
+      paymentMethod: 'TRANSFER',
+      recordedBy: null,
+    });
+  }
+
+  return rows;
+}
+
 function buildWhere(query: AuthRequest['query']): Prisma.CompanyBookEntryWhereInput {
   const where: Prisma.CompanyBookEntryWhereInput = {};
   const type = parseType(query.type);
   if (type) where.type = type;
 
-  const from = parseDate(query.from);
-  const to = parseDate(query.to);
-  if (from || to) {
-    where.occurredAt = {};
-    if (from) where.occurredAt.gte = from;
-    if (to) {
-      const end = new Date(to);
-      end.setHours(23, 59, 59, 999);
-      where.occurredAt.lte = end;
-    }
-  }
+  const range = occurredRange(query);
+  if (range) where.occurredAt = range;
 
   const search = String(query.search || '').trim();
   if (search) {
@@ -61,21 +162,77 @@ const recordedBySelect = {
 export const listCompanyBooks = async (req: AuthRequest, res: Response) => {
   try {
     const where = buildWhere(req.query);
-    const entries = await prisma.companyBookEntry.findMany({
-      where,
-      include: { recordedBy: { select: recordedBySelect } },
-      orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
-      take: Math.min(500, Math.max(1, Number(req.query.limit) || 200)),
-    });
-    return res.json(entries);
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+    const eventId = parseEventId(req.query.eventId);
+    const includeCuts = parseType(req.query.type) !== 'EXPENSE';
+    const [entries, cuts] = await Promise.all([
+      eventId
+        ? Promise.resolve([])
+        : prisma.companyBookEntry.findMany({
+            where,
+            include: { recordedBy: { select: recordedBySelect } },
+            orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+            take: 500,
+          }),
+      includeCuts ? loadTicketCuts(req.query, eventId ? undefined : 400) : Promise.resolve([]),
+    ]);
+
+    const merged = [
+      ...entries.map((entry) => ({ ...entry, source: 'MANUAL' as const })),
+      ...cuts,
+    ]
+      .sort((a, b) => {
+        const delta = new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime();
+        if (delta !== 0) return delta;
+        return String(b.id).localeCompare(String(a.id));
+      })
+      .slice(0, limit);
+
+    return res.json(merged);
   } catch (error) {
     console.error('[companyBooks] list', error);
     return res.status(500).json({ message: 'Server error' });
   }
 };
 
+export const listBookEvents = async (_req: AuthRequest, res: Response) => {
+  try {
+    const orders = await prisma.order.findMany({
+      where: { status: 'PAID', platformFee: { gt: 0 } },
+      distinct: ['eventId'],
+      select: { eventId: true, event: { select: { title: true } } },
+    });
+
+    const byId = new Map<number, string>();
+    for (const row of orders) {
+      if (row.eventId && row.event?.title) byId.set(row.eventId, row.event.title);
+    }
+    const events = Array.from(byId.entries())
+      .map(([id, title]) => ({ id, title }))
+      .sort((a, b) => a.title.localeCompare(b.title));
+    return res.json(events);
+  } catch (error) {
+    console.error('[companyBooks] events', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
 export const summarizeCompanyBooks = async (req: AuthRequest, res: Response) => {
   try {
+    const eventId = parseEventId(req.query.eventId);
+    if (eventId) {
+      const cuts = await loadTicketCuts(req.query);
+      const income = cuts.reduce((sum, cut) => sum + cut.amount, 0);
+      return res.json({
+        income,
+        expense: 0,
+        net: income,
+        incomeCount: cuts.length,
+        expenseCount: 0,
+        totalCount: cuts.length,
+      });
+    }
+
     const where = buildWhere(req.query);
     const groups = await prisma.companyBookEntry.groupBy({
       by: ['type'],
@@ -96,6 +253,14 @@ export const summarizeCompanyBooks = async (req: AuthRequest, res: Response) => 
       } else {
         expense = sum;
         expenseCount = row._count._all;
+      }
+    }
+
+    if (parseType(req.query.type) !== 'EXPENSE') {
+      const cuts = await loadTicketCuts(req.query);
+      for (const cut of cuts) {
+        income += cut.amount;
+        incomeCount += 1;
       }
     }
 

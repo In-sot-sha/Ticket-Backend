@@ -182,6 +182,16 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   app.listen(PORT, () => {
     console.log(`✅  Server running on http://localhost:${PORT}`);
     console.log(`    Health: http://localhost:${PORT}/health`);
+    import('./services/promotions')
+      .then(({ clearStalePromotions }) => {
+        clearStalePromotions().catch((err) => console.error('[promotions]', err));
+        if (!process.env.VERCEL) {
+          setInterval(() => {
+            clearStalePromotions().catch((err) => console.error('[promotions]', err));
+          }, 6 * 60 * 60 * 1000);
+        }
+      })
+      .catch((err) => console.error('[promotions]', err));
   });
 // }
 

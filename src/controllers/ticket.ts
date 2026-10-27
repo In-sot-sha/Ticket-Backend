@@ -95,10 +95,13 @@ export const getEventAttendanceTickets = async (req: AuthRequest, res: Response)
         order: {
           select: {
             id: true,
+            status: true,
+            chargeAmount: true,
             acceptedTerms: true,
             acceptedMarketing: true,
             termsAcceptedAt: true,
             createdAt: true,
+            _count: { select: { tickets: true } },
           },
         },
       },
@@ -138,6 +141,18 @@ export const getAdminTickets = async (req: AuthRequest, res: Response) => {
         user: ticketSafeUser,
         ticketType: { select: { id: true, name: true, price: true } },
         soldBy: ticketSafeSoldBy,
+        order: {
+          select: {
+            id: true,
+            status: true,
+            totalAmount: true,
+            chargeAmount: true,
+            platformFee: true,
+            processingFee: true,
+            createdAt: true,
+            _count: { select: { tickets: true } },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' }
     });
@@ -460,6 +475,52 @@ export const createTicket = async (req: AuthRequest, res: Response) => {
   }
 };
 
+async function scannerLabel(req: AuthRequest): Promise<string | null> {
+  if (req.userId) {
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { firstName: true, lastName: true },
+    });
+    const name = user ? `${user.firstName} ${user.lastName}`.trim() : '';
+    if (name) return name;
+  }
+  const fromBody = String(req.body?.scannerName || '').trim().slice(0, 80);
+  return fromBody || null;
+}
+
+async function alreadyScannedBody(ticketId: number, preferDay: string | null) {
+  const todayRow = preferDay
+    ? await prisma.ticketCheckIn.findUnique({
+        where: { ticketId_eventDay: { ticketId, eventDay: preferDay } },
+      })
+    : null;
+  const row =
+    todayRow ??
+    (await prisma.ticketCheckIn.findFirst({
+      where: { ticketId },
+      orderBy: { createdAt: 'desc' },
+    }));
+
+  let scannedByName = row?.scannerName?.trim() || '';
+  if (!scannedByName && row?.scannedBy) {
+    const user = await prisma.user.findUnique({
+      where: { id: row.scannedBy },
+      select: { firstName: true, lastName: true },
+    });
+    if (user) scannedByName = `${user.firstName} ${user.lastName}`.trim();
+  }
+
+  return {
+    lastScan: row
+      ? {
+          at: row.createdAt.toISOString(),
+          scannedBy: scannedByName || null,
+          eventDay: row.eventDay,
+        }
+      : null,
+  };
+}
+
 /**
  * Validate a ticket
  */
@@ -569,10 +630,12 @@ export const validateTicket = async (req: AuthRequest, res: Response) => {
 
     const singleUse = Boolean(dayPassYmd) || !multiDay;
     if (singleUse && ticket.status === 'USED') {
+      const prior = await alreadyScannedBody(ticket.id, null);
       res.status(400).json({
-        message: 'This ticket has already been scanned and used.',
+        message: 'This ticket has already been scanned.',
         status: 'USED',
         ticket,
+        ...prior,
       });
       return;
     }
@@ -581,32 +644,38 @@ export const validateTicket = async (req: AuthRequest, res: Response) => {
       where: { ticketId_eventDay: { ticketId: ticket.id, eventDay: today } },
     });
     if (alreadyToday) {
+      const prior = await alreadyScannedBody(ticket.id, today);
       res.status(400).json({
         message: multiDay && !dayPassYmd
-          ? 'Already checked in today. Come back tomorrow.'
-          : 'This ticket has already been scanned and used.',
+          ? 'Already checked in today.'
+          : 'This ticket has already been scanned.',
         status: multiDay && !dayPassYmd ? 'ALREADY_IN_TODAY' : 'USED',
         ticket,
+        ...prior,
       });
       return;
     }
 
+    const whoScanned = await scannerLabel(req);
     try {
       await prisma.ticketCheckIn.create({
         data: {
           ticketId: ticket.id,
           eventDay: today,
           scannedBy: req.userId ?? null,
+          scannerName: whoScanned,
         },
       });
     } catch (err: any) {
       if (err?.code === 'P2002') {
+        const prior = await alreadyScannedBody(ticket.id, today);
         res.status(400).json({
           message: singleUse
-            ? 'This ticket has already been scanned and used.'
-            : 'Already checked in today. Come back tomorrow.',
+            ? 'This ticket has already been scanned.'
+            : 'Already checked in today.',
           status: singleUse ? 'USED' : 'ALREADY_IN_TODAY',
           ticket,
+          ...prior,
         });
         return;
       }

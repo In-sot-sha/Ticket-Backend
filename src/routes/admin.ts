@@ -55,6 +55,7 @@ import {
 } from '../controllers/opsStaff';
 import {
   listCompanyBooks,
+  listBookEvents,
   summarizeCompanyBooks,
   createCompanyBook,
   updateCompanyBook,
@@ -75,6 +76,7 @@ router.get('/users', getUsers);
 router.put('/users/:id/role', updateUserRole);
 router.get('/transactions', getTransactions);
 router.get('/books/summary', summarizeCompanyBooks);
+router.get('/books/events', listBookEvents);
 router.get('/books', listCompanyBooks);
 router.post('/books', createCompanyBook);
 router.put('/books/:id', updateCompanyBook);

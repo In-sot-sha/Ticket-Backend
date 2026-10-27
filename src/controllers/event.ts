@@ -4,6 +4,7 @@ import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/auth';
 import { uploadEventImage } from '../utils/imageUpload';
 import { parseValidOn } from '../services/ticketValidity';
+import { clearStalePromotions, livePromotionWhere } from '../services/promotions';
 
 // Helper to generate a URL-friendly slug
 function createSlug(title: string): string {
@@ -283,14 +284,12 @@ export const getEvents = async (req: Request, res: Response) => {
     }
 
     if (promoted === 'true') {
+      await clearStalePromotions();
+      const now = new Date();
       whereClause.isPromoted = true;
+      whereClause.endDate = { gte: now };
       whereClause.AND = [
-        {
-          OR: [
-            { promotedUntil: null },
-            { promotedUntil: { gte: new Date() } }
-          ]
-        }
+        { OR: [{ promotedUntil: null }, { promotedUntil: { gte: now } }] },
       ];
     }
 
@@ -397,11 +396,11 @@ export const getEvents = async (req: Request, res: Response) => {
 
     // Homepage (and other lists) otherwise miss older events that are still promoted.
     if (upcoming === 'true' && pageNum === 1 && promoted !== 'true' && !search) {
+      await clearStalePromotions();
       const featured = await prisma.event.findMany({
         where: {
           isPublished: true,
-          isPromoted: true,
-          OR: [{ promotedUntil: null }, { promotedUntil: { gte: new Date() } }],
+          ...livePromotionWhere(),
           ...(category ? { category: String(category) } : {}),
         },
         include: eventInclude,

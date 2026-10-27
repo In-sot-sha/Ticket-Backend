@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -433,6 +433,8 @@ model TicketCheckIn {
   /** YYYY-MM-DD in Africa/Lagos */
   eventDay  String
   scannedBy Int?
+  /** Name shown if this pass is scanned again. PIN scanners have no user id. */
+  scannerName String?
   createdAt DateTime @default(now())
 
   ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
