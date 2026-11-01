@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/auth';
-import { loadPaystackSettlementSnapshot } from '../services/paystack';
+import { loadPaystackSettlementSnapshot, loadPaystackSubaccountSettlements } from '../services/paystack';
 
 // Helper to get organizer's organization ID
 async function getOrgId(userId: number): Promise<number | null> {
@@ -45,18 +45,23 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
     });
     const eventIds = events.map(e => e.id);
 
-    // Sum of netAmount / fees from PAID ONLINE orders and vendor applications
+    // Sum of netAmount / fees from PAID ONLINE & ASSISTED orders and vendor applications
     let totalEarnings = 0;
     let grossSales = 0;
     let platformFees = 0;
     let processingFees = 0;
+    let breakdown = {
+      online: { gross: 0, platformFee: 0, netAmount: 0, ordersCount: 0 },
+      assisted: { gross: 0, partyStormCut: 0, netAmount: 0, discountAmount: 0, ordersCount: 0 },
+    };
+
     if (eventIds.length > 0) {
-      const [salesAggregate, vendorAggregate] = await Promise.all([
+      const [onlineSalesAggregate, assistedSalesAggregate, vendorAggregate] = await Promise.all([
         prisma.order.aggregate({
           where: {
             eventId: { in: eventIds },
             status: 'PAID',
-            purchaseType: 'ONLINE'
+            purchaseType: 'ONLINE',
           },
           _sum: {
             netAmount: true,
@@ -64,31 +69,72 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
             platformFee: true,
             processingFee: true,
             chargeAmount: true,
-          }
+            discountAmount: true,
+          },
+          _count: { id: true },
+        }),
+        prisma.order.aggregate({
+          where: {
+            eventId: { in: eventIds },
+            status: 'PAID',
+            purchaseType: 'ASSISTED',
+          },
+          _sum: {
+            netAmount: true,
+            totalAmount: true,
+            platformFee: true,
+            processingFee: true,
+            chargeAmount: true,
+            discountAmount: true,
+          },
+          _count: { id: true },
         }),
         prisma.vendorApplication.aggregate({
           where: {
             eventId: { in: eventIds },
-            paymentStatus: 'PAID'
+            paymentStatus: 'PAID',
           },
           _sum: {
             netAmount: true,
             paymentAmount: true,
             platformFee: true,
             processingFee: true,
-          }
-        })
+          },
+          _count: { id: true },
+        }),
       ]);
-      totalEarnings = (salesAggregate?._sum?.netAmount ?? 0) + (vendorAggregate?._sum?.netAmount ?? 0);
-      grossSales =
-        (salesAggregate?._sum?.totalAmount ?? 0) +
-        (vendorAggregate?._sum?.paymentAmount ?? 0);
-      platformFees =
-        (salesAggregate?._sum?.platformFee ?? 0) +
-        (vendorAggregate?._sum?.platformFee ?? 0);
+
+      const onlineGross = onlineSalesAggregate?._sum?.totalAmount ?? 0;
+      const onlineFee = onlineSalesAggregate?._sum?.platformFee ?? 0;
+      const onlineNet = onlineSalesAggregate?._sum?.netAmount ?? 0;
+
+      const assistedGross = assistedSalesAggregate?._sum?.totalAmount ?? 0;
+      const assistedCut = assistedSalesAggregate?._sum?.platformFee ?? 0;
+      const assistedNet = assistedSalesAggregate?._sum?.netAmount ?? 0;
+      const assistedDiscount = assistedSalesAggregate?._sum?.discountAmount ?? 0;
+
+      totalEarnings = onlineNet + assistedNet + (vendorAggregate?._sum?.netAmount ?? 0);
+      grossSales = onlineGross + assistedGross + (vendorAggregate?._sum?.paymentAmount ?? 0);
+      platformFees = onlineFee + assistedCut + (vendorAggregate?._sum?.platformFee ?? 0);
       processingFees =
-        (salesAggregate?._sum?.processingFee ?? 0) +
+        (onlineSalesAggregate?._sum?.processingFee ?? 0) +
         (vendorAggregate?._sum?.processingFee ?? 0);
+
+      breakdown = {
+        online: {
+          gross: onlineGross,
+          platformFee: onlineFee,
+          netAmount: onlineNet,
+          ordersCount: onlineSalesAggregate?._count?.id ?? 0,
+        },
+        assisted: {
+          gross: assistedGross,
+          partyStormCut: assistedCut,
+          netAmount: assistedNet,
+          discountAmount: assistedDiscount,
+          ordersCount: assistedSalesAggregate?._count?.id ?? 0,
+        },
+      };
     }
 
     // Get completed payouts (status: PAID)
@@ -116,10 +162,12 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
     const totalPending = pendingPayoutsAggregate?._sum?.amount ?? 0;
 
     const hasSubaccount = Boolean(organization.paystackSubaccountCode);
-    // Split sales already settle to the organizer bank. The ledger balance is only for
-    // money still held on the platform, which is none once a subaccount is connected.
+    // Split sales already settle to the organizer bank via Paystack T+1.
+    // For assisted sales (or orgs without Paystack subaccounts), funds held on platform ledger
+    // are available for settlement.
+    const assistedNetEarnings = breakdown.assisted.netAmount;
     const availableBalance = hasSubaccount
-      ? 0
+      ? Math.max(0, assistedNetEarnings - totalPaidOut - totalPending)
       : Math.max(0, totalEarnings - totalPaidOut - totalPending);
     const settlementMode = hasSubaccount
       ? 'PAYSTACK_SPLIT'
@@ -136,6 +184,7 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
       grossSales,
       platformFees,
       processingFees,
+      breakdown,
       totalPaidOut,
       totalPending,
       availableBalance,
@@ -199,24 +248,25 @@ export const getOrganizerPayouts = async (req: AuthRequest, res: Response) => {
       netByReference.set(row.paymentReference, (netByReference.get(row.paymentReference) || 0) + (row.netAmount || 0));
     }
 
-    const snapshot = await loadPaystackSettlementSnapshot();
     const code = organization.paystackSubaccountCode;
+    // Payouts must strictly be for this organizer's subaccount only.
+    if (!code) {
+      return res.json({
+        configured: Boolean(process.env.PAYSTACK_SECRET_KEY),
+        payouts: [],
+        byReference: {},
+      });
+    }
+
+    const snapshot = await loadPaystackSubaccountSettlements(code);
     const payouts = snapshot.settlements
-      .map((settlement) => {
-        const matched = settlement.references.filter((reference) => netByReference.has(reference));
-        const ownsSettlement = Boolean(code && settlement.subaccountCode === code);
-        if (!ownsSettlement && matched.length === 0) return null;
-        const amount = ownsSettlement
-          ? settlement.amount
-          : matched.reduce((sum, reference) => sum + (netByReference.get(reference) || 0), 0);
-        return {
-          id: settlement.id,
-          status: settlement.status,
-          amount,
-          settlementDate: settlement.settlementDate,
-        };
-      })
-      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+      .filter((settlement) => settlement.subaccountCode === code)
+      .map((settlement) => ({
+        id: settlement.id,
+        status: settlement.status,
+        amount: settlement.amount,
+        settlementDate: settlement.settlementDate,
+      }));
 
     const byReference: typeof snapshot.byReference = {};
     for (const reference of netByReference.keys()) {
@@ -281,7 +331,7 @@ export const requestPayout = async (req: AuthRequest, res: Response) => {
           where: {
             eventId: { in: eventIds },
             status: 'PAID',
-            purchaseType: 'ONLINE'
+            purchaseType: { in: ['ONLINE', 'ASSISTED'] }
           },
           _sum: {
             netAmount: true

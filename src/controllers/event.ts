@@ -1491,7 +1491,17 @@ export const getOrganizerAnalytics = async (req: AuthRequest, res: Response) => 
         event: { select: { id: true, title: true } },
         ticketType: { select: { name: true, price: true } },
         user: { select: { firstName: true, lastName: true } },
-        order: { select: { paymentReference: true } },
+        order: {
+          select: {
+            paymentReference: true,
+            platformFee: true,
+            netAmount: true,
+            purchaseType: true,
+            discountAmount: true,
+            discountReason: true,
+            originalAmount: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: 20,
@@ -1504,6 +1514,9 @@ export const getOrganizerAnalytics = async (req: AuthRequest, res: Response) => 
         if (paymentMethod === 'TRANSFER') return 'Transfer';
         return 'At the door';
       }
+      if (purchaseType === 'ASSISTED') {
+        return 'Assisted Direct';
+      }
       return 'Online';
     };
 
@@ -1512,11 +1525,17 @@ export const getOrganizerAnalytics = async (req: AuthRequest, res: Response) => 
       eventId: t.event.id,
       eventTitle: t.event.title,
       ticketType: t.ticketType.name,
-      amount: t.ticketType.price,
+      amount: t.amountPaid && t.amountPaid > 0 ? t.amountPaid : t.ticketType.price,
       buyerName: t.user ? `${t.user.firstName} ${t.user.lastName}`.trim() : 'Guest',
       date: t.createdAt,
       status: t.status === 'USED' ? 'checked_in' : 'sold',
       channel: channelFor(t.purchaseType, t.paymentMethod),
+      purchaseType: t.purchaseType,
+      platformFee: t.order?.platformFee ?? null,
+      netAmount: t.order?.netAmount ?? null,
+      discountAmount: t.order?.discountAmount ?? 0,
+      discountReason: t.order?.discountReason ?? null,
+      originalAmount: t.order?.originalAmount ?? null,
       paymentReference: t.order?.paymentReference || null,
     }));
 

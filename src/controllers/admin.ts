@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
-import { PLATFORM_FEE_RATE } from '../constants/fees';
+import { PLATFORM_FEE_RATE, platformFeeForUnit } from '../constants/fees';
 import { loadPaystackSettlementSnapshot } from '../services/paystack';
 import { clearStalePromotions } from '../services/promotions';
 import {
@@ -148,6 +148,9 @@ export const getTransactions = async (req: AuthRequest, res: Response) => {
       netAmount: o.netAmount,
       status: o.status,
       purchaseType: o.purchaseType,
+      discountAmount: o.discountAmount ?? 0,
+      discountReason: o.discountReason ?? null,
+      originalAmount: o.originalAmount ?? null,
       paymentReference: o.paymentReference,
       tickets: o.tickets || [],
       createdAt: o.createdAt,
@@ -1382,5 +1385,274 @@ export const rejectPayout = async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/**
+ * Admin: Issue Assisted / Pre-Event Direct Tickets with customized or standard PartyStorm cut.
+ * POST /admin/orders/assisted-sale
+ */
+export const createAssistedSaleOrder = async (req: AuthRequest, res: Response) => {
+  try {
+    const {
+      eventId,
+      ticketTypeId,
+      quantity = 1,
+      buyerName,
+      buyerEmail,
+      buyerPhone,
+      paymentMethod = 'TRANSFER',
+      platformFee: customPlatformFee,
+      checkInNow = false,
+      attendees,
+      discountAmount: rawDiscountAmount = 0,
+      discountReason: rawDiscountReason,
+      notes,
+    } = req.body || {};
+
+    if (!eventId || !ticketTypeId) {
+      return res.status(400).json({ message: 'eventId and ticketTypeId are required' });
+    }
+
+    if (!buyerName?.trim()) {
+      return res.status(400).json({ message: 'Buyer name is required' });
+    }
+
+    const cleanEmail = (buyerEmail || '').trim().toLowerCase();
+    const cleanPhone = (buyerPhone || '').trim();
+    const isSplit = Array.isArray(attendees) && attendees.length > 0;
+    const qty = Math.max(1, Math.min(100, Math.floor(Number(quantity) || 1)));
+
+    const attendeesList = isSplit
+      ? attendees.slice(0, qty).map((a: any, i: number) => ({
+          name: (a?.name || (i === 0 ? buyerName : `${buyerName} (Guest ${i + 1})`)).trim(),
+          email: (a?.email || (i === 0 ? cleanEmail : '')).trim().toLowerCase(),
+          phone: (a?.phone || (i === 0 ? cleanPhone : '')).trim(),
+        }))
+      : [];
+
+    if (!cleanEmail && !cleanPhone && !attendeesList.some((a) => a.email || a.phone)) {
+      return res.status(400).json({ message: 'Either an email or phone number is required to deliver tickets' });
+    }
+
+    const event = await prisma.event.findUnique({
+      where: { id: Number(eventId) },
+      include: {
+        organization: { select: { id: true, name: true, logo: true } },
+      },
+    });
+
+    if (!event) {
+      return res.status(404).json({ message: 'Event not found' });
+    }
+
+    const ticketType = await prisma.ticketType.findUnique({
+      where: { id: Number(ticketTypeId) },
+    });
+
+    if (!ticketType || ticketType.eventId !== event.id) {
+      return res.status(404).json({ message: 'Ticket type not found for this event' });
+    }
+
+    const unitPrice = Number(ticketType.price) || 0;
+    const faceTotal = Math.round(unitPrice * qty);
+    const validDiscount = Math.max(0, Math.min(faceTotal, Math.round(Number(rawDiscountAmount) || 0)));
+    const grossTotal = Math.max(0, faceTotal - validDiscount);
+    const discountReason = validDiscount > 0 ? (rawDiscountReason ? String(rawDiscountReason).trim() : null) : null;
+
+    // Calculate Platform Fee (PartyStorm's Cut)
+    let finalPlatformFee: number;
+    if (customPlatformFee !== undefined && customPlatformFee !== null && customPlatformFee !== '') {
+      const parsedFee = Number(customPlatformFee);
+      if (!Number.isFinite(parsedFee) || parsedFee < 0) {
+        return res.status(400).json({ message: 'Platform fee must be a valid positive number' });
+      }
+      finalPlatformFee = Math.min(grossTotal, Math.round(parsedFee));
+    } else {
+      // Calculate platform fee on actual collected unit price
+      const effectiveUnitPrice = qty > 0 ? grossTotal / qty : unitPrice;
+      finalPlatformFee = Math.min(grossTotal, platformFeeForUnit(effectiveUnitPrice, ticketType.platformFeeNaira) * qty);
+    }
+
+    const netAmount = Math.max(0, grossTotal - finalPlatformFee);
+
+    // Get or create guest user
+    const { getOrCreateGuestUser } = await import('../services/guestUser');
+    const guestUser = await getOrCreateGuestUser({
+      name: buyerName.trim(),
+      email: cleanEmail || undefined,
+      phone: cleanPhone || undefined,
+    });
+
+    // Valid payment method enum mapping
+    const validMethod = ['CASH', 'POS', 'TRANSFER'].includes(String(paymentMethod).toUpperCase())
+      ? (String(paymentMethod).toUpperCase() as 'CASH' | 'POS' | 'TRANSFER')
+      : 'TRANSFER';
+
+    const paymentReference = `ASSIST-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    const { order, tickets } = await prisma.$transaction(async (tx) => {
+      const createdOrder = await tx.order.create({
+        data: {
+          userId: guestUser.id,
+          eventId: event.id,
+          totalAmount: grossTotal,
+          platformFee: finalPlatformFee,
+          processingFee: 0, // No payment gateway fee incurred on direct assisted sales
+          netAmount,
+          chargeAmount: grossTotal,
+          originalAmount: faceTotal,
+          discountAmount: validDiscount,
+          discountReason,
+          paymentReference,
+          status: 'PAID',
+          purchaseType: 'ASSISTED',
+          acceptedTerms: true,
+          termsAcceptedAt: new Date(),
+        },
+      });
+
+      const createdTickets = [];
+      const unitPaid = qty > 0 ? Math.round((grossTotal / qty) * 100) / 100 : unitPrice;
+
+      for (let i = 0; i < qty; i++) {
+        let ticketUser = guestUser;
+        if (isSplit && attendeesList[i]) {
+          const att = attendeesList[i];
+          if (att.email || att.phone || (att.name && att.name !== buyerName)) {
+            ticketUser = await getOrCreateGuestUser({
+              name: att.name || buyerName.trim(),
+              email: att.email || undefined,
+              phone: att.phone || undefined,
+            });
+          }
+        }
+
+        const t = await tx.ticket.create({
+          data: {
+            eventId: event.id,
+            ticketTypeId: ticketType.id,
+            userId: ticketUser.id,
+            qrCode: `QR-ASSIST-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
+            status: checkInNow ? 'USED' : 'VALID',
+            purchaseType: 'ASSISTED',
+            orderId: createdOrder.id,
+            paymentMethod: validMethod,
+            amountPaid: unitPaid,
+            soldByUserId: req.userId,
+          },
+          include: {
+            event: true,
+            ticketType: true,
+          },
+        });
+        createdTickets.push(t);
+      }
+
+      return { order: createdOrder, tickets: createdTickets };
+    });
+
+    const { sendTicketEmail } = await import('../services/checkoutFulfillment');
+    const { deliverTicketsViaWhatsApp } = await import('../services/whatsapp');
+
+    // Deliver via Email & WhatsApp
+    if (isSplit && attendeesList.length > 0) {
+      // Send individual tickets to each attendee
+      for (let i = 0; i < tickets.length; i++) {
+        const att = attendeesList[i];
+        const ticket = tickets[i];
+        const targetEmail = att?.email || (i === 0 ? cleanEmail : '');
+        const targetPhone = att?.phone || (i === 0 ? cleanPhone : '');
+
+        if (targetEmail) {
+          try {
+            await sendTicketEmail({
+              email: targetEmail,
+              event,
+              ticketType,
+              tickets: [ticket],
+              totalPrice: unitPrice,
+              quantity: 1,
+              organizerName: event.organization?.name,
+              organizerLogo: event.organization?.logo,
+            });
+          } catch (emailErr) {
+            console.error(`[AssistedSale] Failed individual email to ${targetEmail}:`, emailErr);
+          }
+        }
+
+        if (targetPhone) {
+          try {
+            await deliverTicketsViaWhatsApp({
+              phone: targetPhone,
+              eventTitle: event.title,
+              eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
+              eventLocation: event.location || 'TBA',
+              tickets: [{
+                id: ticket.id,
+                qrCode: ticket.qrCode,
+                ticketTypeName: ticketType.name,
+              }],
+            });
+          } catch (waErr) {
+            console.error(`[AssistedSale] Failed individual WhatsApp to ${targetPhone}:`, waErr);
+          }
+        }
+      }
+    } else {
+      // Single recipient bulk delivery
+      if (cleanEmail) {
+        try {
+          await sendTicketEmail({
+            email: cleanEmail,
+            event,
+            ticketType: { name: `${ticketType.name} × ${qty}` },
+            tickets,
+            totalPrice: grossTotal,
+            quantity: qty,
+            organizerName: event.organization?.name,
+            organizerLogo: event.organization?.logo,
+          });
+        } catch (emailErr) {
+          console.error('[AssistedSale] Failed to send ticket email:', emailErr);
+        }
+      }
+
+      if (cleanPhone) {
+        try {
+          await deliverTicketsViaWhatsApp({
+            phone: cleanPhone,
+            eventTitle: event.title,
+            eventDate: event.startDate ? new Date(event.startDate).toLocaleDateString() : 'TBA',
+            eventLocation: event.location || 'TBA',
+            tickets: tickets.map((t) => ({
+              id: t.id,
+              qrCode: t.qrCode,
+              ticketTypeName: ticketType.name,
+            })),
+          });
+        } catch (waErr) {
+          console.error('[AssistedSale] Failed to deliver WhatsApp tickets:', waErr);
+        }
+      }
+    }
+
+    return res.status(201).json({
+      message: 'Assisted sale recorded and tickets issued successfully',
+      order,
+      tickets,
+      ticketsCount: tickets.length,
+      breakdown: {
+        originalAmount: faceTotal,
+        discountAmount: validDiscount,
+        discountReason,
+        gross: grossTotal,
+        platformFee: finalPlatformFee,
+        netAmount,
+      },
+    });
+  } catch (error: any) {
+    console.error('[Admin] createAssistedSaleOrder error:', error);
+    return res.status(500).json({ message: error.message || 'Server error recording assisted sale' });
   }
 };

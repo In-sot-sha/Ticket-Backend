@@ -281,6 +281,78 @@ export async function loadPaystackSettlementSnapshot(): Promise<PaystackSettleme
   return body;
 }
 
+const subaccountSettlementCache = new Map<string, { at: number; body: PaystackSettlementSnapshot }>();
+
+export async function loadPaystackSubaccountSettlements(
+  subaccountCode: string,
+): Promise<PaystackSettlementSnapshot> {
+  if (!process.env.PAYSTACK_SECRET_KEY || !subaccountCode) {
+    return { configured: Boolean(process.env.PAYSTACK_SECRET_KEY), settlements: [], byReference: {} };
+  }
+
+  const cached = subaccountSettlementCache.get(subaccountCode);
+  if (cached && Date.now() - cached.at < 3 * 60 * 1000) {
+    return cached.body;
+  }
+
+  try {
+    const result = await paystackFetch<any[]>(
+      `/settlement?subaccount=${encodeURIComponent(subaccountCode)}&perPage=20`,
+    );
+
+    if (!result.ok || !Array.isArray(result.data)) {
+      const emptyBody = { configured: true, settlements: [], byReference: {} };
+      subaccountSettlementCache.set(subaccountCode, { at: Date.now(), body: emptyBody });
+      return emptyBody;
+    }
+
+    const recent = result.data.slice(0, 12);
+    const txLists: any[][] = [];
+    for (let i = 0; i < recent.length; i += 4) {
+      const chunk = recent.slice(i, i + 4);
+      const loaded = await Promise.all(
+        chunk.map((settlement) =>
+          listPaystackSettlementTransactions(settlement.id).catch(() => [] as any[]),
+        ),
+      );
+      txLists.push(...loaded);
+    }
+
+    const byReference: PaystackSettlementSnapshot['byReference'] = {};
+    const settlements: PaystackSettlementRow[] = recent.map((settlement, index) => {
+      const txs = txLists[index] || [];
+      const references: string[] = [];
+      for (const tx of txs) {
+        if (!tx?.reference) continue;
+        const reference = String(tx.reference);
+        references.push(reference);
+        byReference[reference] = {
+          status: String(settlement.status || ''),
+          settlementDate: settlement.settlement_date || settlement.createdAt || null,
+          settlementId: settlement.id,
+        };
+      }
+      const amountKobo = Number(settlement.effective_amount ?? settlement.total_amount ?? 0);
+      return {
+        id: settlement.id,
+        status: String(settlement.status || ''),
+        amount: amountKobo / 100,
+        settlementDate: settlement.settlement_date || settlement.createdAt || null,
+        subaccountCode,
+        businessName: settlement.subaccount?.business_name || null,
+        references,
+      };
+    });
+
+    const body = { configured: true, settlements, byReference };
+    subaccountSettlementCache.set(subaccountCode, { at: Date.now(), body });
+    return body;
+  } catch (err) {
+    console.error('[Paystack] loadPaystackSubaccountSettlements error:', err);
+    return { configured: false, settlements: [], byReference: {} };
+  }
+}
+
 export async function listPaystackSettlements(perPage = 20): Promise<any[]> {
   const result = await paystackFetch<any[]>(`/settlement?perPage=${perPage}`);
   if (!result.ok || !Array.isArray(result.data)) {

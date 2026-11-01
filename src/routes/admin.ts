@@ -24,6 +24,7 @@ import {
   getPaystackSettlements,
   approvePayout,
   rejectPayout,
+  createAssistedSaleOrder,
 } from '../controllers/admin';
 import {
   resolvePaystackPayment,
@@ -90,6 +91,7 @@ router.post('/payments/resolve', resolvePaystackPayment);
 router.get('/payments/pending', listPendingPaymentIntents);
 router.post('/payments/sweep-pending', sweepPendingPaymentIntents);
 router.post('/orders/:orderId/resend-tickets', resendOrderTicketsAdmin);
+router.post('/orders/assisted-sale', createAssistedSaleOrder);
 router.get('/support/tickets', getSupportTickets);
 router.get('/support/tickets/:id', getSupportTicketById);
 router.post('/support/tickets/:id/replies', replyToSupportTicket);
