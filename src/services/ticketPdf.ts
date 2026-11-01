@@ -159,10 +159,10 @@ async function drawTicketPassPage(
   logo: PDFImage | null,
   pass: TicketPdfPass,
 ) {
-  const W = 840;
-  const H = 320;
-  const stubW = 280;
-  const photoW = W - stubW;
+  // Vertical (portrait) pass optimized for mobile screens & print (420×700, ~3:5 ratio)
+  const W = 420;
+  const H = 700;
+  const splitY = 360; // Boundary between top photo panel and bottom stub
 
   const accentHex = resolveAccent(pass.ticketStyle, pass.accentColor);
   const accent = hexToRgb(accentHex);
@@ -171,28 +171,29 @@ async function drawTicketPassPage(
   const copy = LAYOUT_COPY[layout] || LAYOUT_COPY.classic;
   const split = splitTitle(pass.eventTitle || 'Event');
 
-  // Photo panel
-  drawCoverImage(page, banner, 0, 0, photoW, H);
-  // Dark overlays (left-heavy + bottom), approximating frontend gradients
+  // 1. Top Section: Event Banner & Details
+  drawCoverImage(page, banner, 0, splitY, W, H - splitY);
+
+  // Dark overlays for contrast
   page.drawRectangle({
     x: 0,
-    y: 0,
-    width: photoW,
-    height: H,
+    y: splitY,
+    width: W,
+    height: H - splitY,
     color: rgb(0, 0, 0),
-    opacity: 0.55,
+    opacity: 0.65,
   });
   page.drawRectangle({
     x: 0,
-    y: 0,
-    width: photoW * 0.72,
-    height: H,
+    y: splitY,
+    width: W,
+    height: (H - splitY) * 0.65,
     color: rgb(0, 0, 0),
     opacity: 0.35,
   });
 
-  const pad = 28;
-  let y = H - pad - 10;
+  const pad = 26;
+  let y = H - pad - 12;
 
   // Headline + host logo
   page.drawText(copy.headline, {
@@ -200,16 +201,16 @@ async function drawTicketPassPage(
     y,
     size: 9,
     font: fontBold,
-    color: rgb(0.7, 0.7, 0.72),
+    color: rgb(0.75, 0.75, 0.78),
   });
 
   if (logo) {
-    const logoSize = 36;
+    const logoSize = 34;
     const scale = Math.min(logoSize / logo.width, logoSize / logo.height);
     const lw = logo.width * scale;
     const lh = logo.height * scale;
     page.drawRectangle({
-      x: photoW - pad - logoSize - 2,
+      x: W - pad - logoSize - 2,
       y: y - 8,
       width: logoSize + 4,
       height: logoSize + 4,
@@ -217,45 +218,69 @@ async function drawTicketPassPage(
       borderColor: rgb(1, 1, 1),
       borderWidth: 0,
     });
-    // Rounded look approximated with white square behind logo
     page.drawImage(logo, {
-      x: photoW - pad - logoSize + (logoSize - lw) / 2,
+      x: W - pad - logoSize + (logoSize - lw) / 2,
       y: y - 6 + (logoSize - lh) / 2,
       width: lw,
       height: lh,
     });
   }
 
-  y -= 36;
+  y -= 38;
 
-  // Title: first word accent, rest white
-  const titleSize = 28;
-  const first = truncate(split.first.toUpperCase(), fontBold, titleSize, photoW - pad * 2 - 40);
-  page.drawText(first, {
-    x: pad,
-    y,
-    size: titleSize,
-    font: fontBold,
-    color: rgb(accent.r, accent.g, accent.b),
-  });
-  if (split.rest) {
-    const firstW = fontBold.widthOfTextAtSize(first, titleSize);
-    const rest = truncate(
-      ` ${split.rest.toUpperCase()}`,
-      fontBold,
-      titleSize,
-      photoW - pad * 2 - firstW - 8,
-    );
-    page.drawText(rest, {
-      x: pad + firstW,
+  // Event title: first word accent color, rest white
+  const titleSize = 22;
+  const maxTitleW = W - pad * 2;
+  const first = split.first.toUpperCase();
+  const rest = split.rest ? split.rest.toUpperCase() : '';
+  const firstW = fontBold.widthOfTextAtSize(first, titleSize);
+
+  if (!rest) {
+    page.drawText(truncate(first, fontBold, titleSize, maxTitleW), {
+      x: pad,
       y,
       size: titleSize,
       font: fontBold,
-      color: rgb(1, 1, 1),
+      color: rgb(accent.r, accent.g, accent.b),
     });
+  } else {
+    const fullW = fontBold.widthOfTextAtSize(`${first} ${rest}`, titleSize);
+    if (fullW <= maxTitleW) {
+      page.drawText(first, {
+        x: pad,
+        y,
+        size: titleSize,
+        font: fontBold,
+        color: rgb(accent.r, accent.g, accent.b),
+      });
+      page.drawText(` ${rest}`, {
+        x: pad + firstW,
+        y,
+        size: titleSize,
+        font: fontBold,
+        color: rgb(1, 1, 1),
+      });
+    } else {
+      // 2 lines: line 1 first word, line 2 rest
+      page.drawText(truncate(first, fontBold, titleSize, maxTitleW), {
+        x: pad,
+        y,
+        size: titleSize,
+        font: fontBold,
+        color: rgb(accent.r, accent.g, accent.b),
+      });
+      y -= 26;
+      page.drawText(truncate(rest, fontBold, titleSize, maxTitleW), {
+        x: pad,
+        y,
+        size: titleSize,
+        font: fontBold,
+        color: rgb(1, 1, 1),
+      });
+    }
   }
 
-  y -= 32;
+  y -= 28;
   page.drawText(copy.venueLabel, {
     x: pad,
     y,
@@ -263,24 +288,24 @@ async function drawTicketPassPage(
     font: fontBold,
     color: rgb(0.65, 0.65, 0.68),
   });
-  y -= 16;
-  page.drawText(truncate((pass.eventLocation || 'Venue TBA').toUpperCase(), fontBold, 12, photoW - pad * 2), {
+  y -= 15;
+  page.drawText(truncate((pass.eventLocation || 'Venue TBA').toUpperCase(), fontBold, 11, W - pad * 2), {
     x: pad,
     y,
-    size: 12,
+    size: 11,
     font: fontBold,
     color: rgb(1, 1, 1),
   });
 
-  y -= 36;
-  // Divider
+  y -= 24;
+  // Subtle divider line
   page.drawRectangle({
     x: pad,
-    y: y + 10,
-    width: photoW - pad * 2,
+    y: y + 8,
+    width: W - pad * 2,
     height: 0.75,
     color: rgb(1, 1, 1),
-    opacity: 0.15,
+    opacity: 0.18,
   });
 
   page.drawText('DATE', {
@@ -291,7 +316,7 @@ async function drawTicketPassPage(
     color: rgb(0.7, 0.7, 0.72),
   });
   y -= 14;
-  page.drawText(truncate((pass.eventDate || 'TBA').toUpperCase(), fontBold, 11, 260), {
+  page.drawText(truncate((pass.eventDate || 'TBA').toUpperCase(), fontBold, 11, pass.eventTime ? 180 : W - pad * 2), {
     x: pad,
     y,
     size: 11,
@@ -301,14 +326,14 @@ async function drawTicketPassPage(
 
   if (pass.eventTime) {
     page.drawText('TIME', {
-      x: pad + 220,
+      x: pad + 190,
       y: y + 14,
       size: 7,
       font: fontBold,
       color: rgb(0.7, 0.7, 0.72),
     });
-    page.drawText(truncate(pass.eventTime.toUpperCase(), fontBold, 11, 160), {
-      x: pad + 220,
+    page.drawText(truncate(pass.eventTime.toUpperCase(), fontBold, 11, 140), {
+      x: pad + 190,
       y,
       size: 11,
       font: fontBold,
@@ -316,66 +341,66 @@ async function drawTicketPassPage(
     });
   }
 
-  // Perforation
-  const dashYTop = H - 16;
-  const dashYBottom = 16;
-  for (let dy = dashYBottom; dy < dashYTop; dy += 10) {
+  // 2. Perforation divider at splitY
+  for (let dx = 20; dx < W - 20; dx += 10) {
     page.drawRectangle({
-      x: photoW - 0.75,
-      y: dy,
-      width: 1.5,
-      height: 5,
+      x: dx,
+      y: splitY - 0.75,
+      width: 5,
+      height: 1.5,
       color: rgb(1, 1, 1),
       opacity: 0.35,
     });
   }
+  // Left and right ticket cutouts
   page.drawCircle({
-    x: photoW,
-    y: H,
+    x: 0,
+    y: splitY,
     size: 10,
     color: rgb(1, 1, 1),
   });
   page.drawCircle({
-    x: photoW,
-    y: 0,
+    x: W,
+    y: splitY,
     size: 10,
     color: rgb(1, 1, 1),
   });
 
-  // Accent stub
+  // 3. Bottom Stub (Accent color section)
   page.drawRectangle({
-    x: photoW,
+    x: 0,
     y: 0,
-    width: stubW,
-    height: H,
+    width: W,
+    height: splitY,
     color: rgb(accent.r, accent.g, accent.b),
   });
   page.drawRectangle({
-    x: photoW,
+    x: 0,
     y: 0,
-    width: stubW,
-    height: H,
+    width: W,
+    height: splitY,
     color: rgb(0, 0, 0),
-    opacity: 0.06,
+    opacity: 0.05,
   });
 
-  const stubCx = photoW + stubW / 2;
+  const stubCx = W / 2;
   const ink = rgb(onAccent.r, onAccent.g, onAccent.b);
   const badgeBg =
     onAccent.r > 0.5 ? rgb(0.04, 0.04, 0.04) : rgb(1, 1, 1);
   const badgeFg =
     onAccent.r > 0.5 ? rgb(1, 1, 1) : rgb(0.04, 0.04, 0.04);
 
+  // Ticket type badge pill
   const badgeLabel = truncate(
     (pass.ticketTypeName || 'General Admission').toUpperCase(),
     fontBold,
     9,
-    stubW - 48,
+    W - 60,
   );
-  const badgeW = fontBold.widthOfTextAtSize(badgeLabel, 9) + 24;
-  const badgeH = 22;
+  const badgeW = fontBold.widthOfTextAtSize(badgeLabel, 9) + 26;
+  const badgeH = 24;
   const badgeX = stubCx - badgeW / 2;
-  const badgeY = H - 48;
+  const badgeY = splitY - 44;
   page.drawRectangle({
     x: badgeX,
     y: badgeY,
@@ -385,7 +410,6 @@ async function drawTicketPassPage(
     borderColor: badgeBg,
     borderWidth: 0,
   });
-  // Soft pill: rounded corners approximated
   page.drawCircle({ x: badgeX, y: badgeY + badgeH / 2, size: badgeH / 2, color: badgeBg });
   page.drawCircle({
     x: badgeX + badgeW,
@@ -395,25 +419,26 @@ async function drawTicketPassPage(
   });
   page.drawText(badgeLabel, {
     x: stubCx - fontBold.widthOfTextAtSize(badgeLabel, 9) / 2,
-    y: badgeY + 7,
+    y: badgeY + 7.5,
     size: 9,
     font: fontBold,
     color: badgeFg,
   });
 
+  // Large Scan-ready QR Code
   const qrDataUrl = await QRCode.toDataURL(pass.qrCode || `ticket-${pass.id}`, {
     margin: 1,
-    width: 220,
+    width: 350,
     errorCorrectionLevel: 'M',
     color: { dark: '#000000', light: '#ffffff' },
   });
   const qrBytes = Buffer.from(qrDataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
   const qrImage = await doc.embedPng(qrBytes);
-  const qrPad = 10;
-  const qrSize = 150;
+  const qrPad = 12;
+  const qrSize = 176;
   const qrBox = qrSize + qrPad * 2;
   const qrBoxX = stubCx - qrBox / 2;
-  const qrBoxY = 78;
+  const qrBoxY = 88;
   page.drawRectangle({
     x: qrBoxX,
     y: qrBoxY,
@@ -428,11 +453,12 @@ async function drawTicketPassPage(
     height: qrSize,
   });
 
+  // Security notice & sublabels
   const scan = 'DO NOT SHARE TICKET';
   page.drawText(scan, {
-    x: stubCx - fontBold.widthOfTextAtSize(scan, 8) / 2,
-    y: 52,
-    size: 8,
+    x: stubCx - fontBold.widthOfTextAtSize(scan, 8.5) / 2,
+    y: 60,
+    size: 8.5,
     font: fontBold,
     color: ink,
     opacity: 0.9,
@@ -440,7 +466,7 @@ async function drawTicketPassPage(
   const sub = copy.sublabel.toUpperCase();
   page.drawText(sub, {
     x: stubCx - fontBold.widthOfTextAtSize(sub, 10) / 2,
-    y: 34,
+    y: 42,
     size: 10,
     font: fontBold,
     color: ink,
@@ -448,22 +474,21 @@ async function drawTicketPassPage(
 
   const serial = `TKT-${String(pass.id).padStart(6, '0')}`;
   page.drawText(serial, {
-    x: stubCx - font.widthOfTextAtSize(serial, 7) / 2,
-    y: 16,
-    size: 7,
+    x: stubCx - font.widthOfTextAtSize(serial, 8) / 2,
+    y: 22,
+    size: 8,
     font,
     color: ink,
-    opacity: 0.7,
+    opacity: 0.75,
   });
 }
 
 /**
- * Landscape pass matching the frontend EventTicketCard (photo + accent stub + QR).
- * Page size mirrors the PNG capture (~840×320).
+ * Vertical portrait pass matching mobile screens (420×700).
  */
 export async function buildTicketPdf(pass: TicketPdfPass): Promise<Buffer> {
   const doc = await PDFDocument.create();
-  const page = doc.addPage([840, 320]);
+  const page = doc.addPage([420, 700]);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
 
@@ -483,7 +508,7 @@ export async function buildTicketPdf(pass: TicketPdfPass): Promise<Buffer> {
 /**
  * Consolidated multi-page PDF containing all tickets for an order.
  * Embeds shared resources (banner image, logo, fonts) ONLY ONCE in the document.
- * This shrinks file size from ~30MB down to ~1.5MB for 40 tickets!
+ * Page size: vertical portrait [420, 700].
  */
 export async function buildConsolidatedTicketPdf(passes: TicketPdfPass[]): Promise<Buffer> {
   const validPasses = passes.filter((p) => Boolean(p.qrCode));
@@ -507,7 +532,7 @@ export async function buildConsolidatedTicketPdf(passes: TicketPdfPass[]): Promi
   const logo = await embedImage(doc, firstPass.organizerLogoUrl);
 
   for (const pass of validPasses) {
-    const page = doc.addPage([840, 320]);
+    const page = doc.addPage([420, 700]);
     await drawTicketPassPage(doc, page, font, fontBold, banner, logo, pass);
   }
 

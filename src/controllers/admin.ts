@@ -1,5 +1,4 @@
 import { Response } from 'express';
-import { ZipArchive } from 'archiver';
 import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
 import { PLATFORM_FEE_RATE, platformFeeForUnit } from '../constants/fees';
@@ -1796,7 +1795,26 @@ export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) =
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
 
-    const archive = new ZipArchive({ zlib: { level: 6 } });
+    // Dynamically load archiver with CJS and ESM fallback so Vercel never crashes on ERR_REQUIRE_ESM
+    let archiverMod: any;
+    try {
+      archiverMod = require('archiver');
+    } catch (err: any) {
+      if (err?.code === 'ERR_REQUIRE_ESM') {
+        const dynamicImport = new Function('specifier', 'return import(specifier)');
+        archiverMod = await dynamicImport('archiver');
+      } else {
+        throw err;
+      }
+    }
+    const archiverFactory = archiverMod.default || archiverMod;
+    const archive =
+      typeof archiverFactory === 'function'
+        ? archiverFactory('zip', { zlib: { level: 6 } })
+        : archiverFactory.ZipArchive
+          ? new archiverFactory.ZipArchive({ zlib: { level: 6 } })
+          : archiverFactory.create('zip', { zlib: { level: 6 } });
+
     archive.pipe(res);
 
     const validTickets = order.tickets.filter((t) => Boolean(t.qrCode));
