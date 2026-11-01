@@ -97,6 +97,8 @@ export async function sendTicketEmail(params: {
 }): Promise<boolean> {
   try {
     const { generateTicketConfirmationEmail, sendEmail } = await import('./email');
+    const { buildTicketPdfAttachments } = await import('./ticketPdf');
+
     const eventDate = params.event.startDate
       ? new Date(params.event.startDate).toLocaleDateString()
       : 'TBA';
@@ -107,6 +109,90 @@ export async function sendTicketEmail(params: {
         })
       : null;
     const eventLocation = params.event.location || 'TBA';
+
+    const validTickets = params.tickets.filter((t) => Boolean(t.qrCode));
+    const totalTickets = validTickets.length;
+    const BATCH_SIZE = 10;
+
+    // If more than 10 tickets, dispatch in batches of max 10 tickets per email (each as individual PDF)
+    if (totalTickets > BATCH_SIZE) {
+      const totalBatches = Math.ceil(totalTickets / BATCH_SIZE);
+      let allSuccess = true;
+
+      for (let b = 0; b < totalBatches; b++) {
+        const start = b * BATCH_SIZE;
+        const end = Math.min(start + BATCH_SIZE, totalTickets);
+        const batchTickets = validTickets.slice(start, end);
+
+        let attachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
+        try {
+          attachments = await buildTicketPdfAttachments(
+            batchTickets.map((t) => ({
+              id: t.id,
+              qrCode: t.qrCode,
+              ticketTypeName: t.ticketType?.name || params.ticketType.name,
+              eventTitle: params.event.title,
+              eventDate,
+              eventTime,
+              eventLocation,
+              eventImageUrl: absoluteAssetUrl(params.event.imageUrl),
+              accentColor: t.ticketType?.accentColor || params.ticketType.accentColor,
+              ticketStyle: t.ticketType?.ticketStyle || params.ticketType.ticketStyle,
+              organizerLogoUrl: absoluteAssetUrl(params.organizerLogo),
+            })),
+          );
+        } catch (pdfErr) {
+          console.error(`[Email] Ticket PDF generation failed for batch ${b + 1}:`, pdfErr);
+        }
+
+        const emailContent = generateTicketConfirmationEmail(params.email, {
+          ticketId: batchTickets
+            .map((t) => `TKT-${t.id.toString().padStart(6, '0')}`)
+            .join(' · '),
+          eventTitle: params.event.title,
+          eventDate,
+          eventTime,
+          eventLocation,
+          eventImageUrl: absoluteAssetUrl(params.event.imageUrl),
+          organizerLogoUrl: absoluteAssetUrl(params.organizerLogo),
+          ticketType: `${params.ticketType.name} (Batch ${b + 1} of ${totalBatches})`,
+          quantity: batchTickets.length,
+          totalPrice: params.totalPrice,
+          ticketStyle: params.ticketType.ticketStyle,
+          accentColor: params.ticketType.accentColor,
+          passes: batchTickets.map((t) => ({
+            label: `TKT-${t.id.toString().padStart(6, '0')}`,
+            qrCode: t.qrCode,
+            ticketType: t.ticketType?.name || params.ticketType.name,
+            accentColor: t.ticketType?.accentColor || params.ticketType.accentColor,
+          })),
+        });
+
+        const batchSubject = `${emailContent.subject} (Tickets ${start + 1}–${end} of ${totalTickets})`;
+
+        try {
+          const sent = await sendEmail({
+            to: params.email,
+            subject: batchSubject,
+            html: emailContent.html,
+            text: emailContent.text,
+            attachments: attachments.length ? attachments : undefined,
+          });
+          if (!sent) allSuccess = false;
+        } catch (sendErr) {
+          console.error(`[Email] Failed sending batch ${b + 1}/${totalBatches}:`, sendErr);
+          allSuccess = false;
+        }
+
+        if (b < totalBatches - 1) {
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }
+
+      return allSuccess;
+    }
+
+    // Single email batch (<= 10 tickets)
     const emailContent = generateTicketConfirmationEmail(params.email, {
       ticketId: params.tickets
         .map((t) => `TKT-${t.id.toString().padStart(6, '0')}`)
@@ -132,7 +218,6 @@ export async function sendTicketEmail(params: {
 
     let attachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
     try {
-      const { buildTicketPdfAttachments } = await import('./ticketPdf');
       attachments = await buildTicketPdfAttachments(
         params.tickets
           .filter((t) => t.qrCode)

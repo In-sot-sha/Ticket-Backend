@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { ZipArchive } from 'archiver';
 import { AuthRequest } from '../middleware/auth';
 import { prisma } from '../prisma';
 import { PLATFORM_FEE_RATE, platformFeeForUnit } from '../constants/fees';
@@ -1654,5 +1655,269 @@ export const createAssistedSaleOrder = async (req: AuthRequest, res: Response) =
   } catch (error: any) {
     console.error('[Admin] createAssistedSaleOrder error:', error);
     return res.status(500).json({ message: error.message || 'Server error recording assisted sale' });
+  }
+};
+
+/**
+ * Admin: Download all tickets for an order as a consolidated PDF.
+ * GET /admin/orders/:orderId/tickets-pdf
+ */
+export const downloadOrderTicketsPdf = async (req: AuthRequest, res: Response) => {
+  try {
+    const { orderId } = req.params;
+    const isNumeric = /^\d+$/.test(orderId);
+
+    const order = await prisma.order.findFirst({
+      where: isNumeric
+        ? { id: parseInt(orderId, 10) }
+        : { paymentReference: orderId },
+      include: {
+        event: {
+          include: { organization: true },
+        },
+        tickets: {
+          include: { ticketType: true },
+        },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const { buildConsolidatedTicketPdf } = await import('../services/ticketPdf');
+    const eventDate = order.event.startDate
+      ? new Date(order.event.startDate).toLocaleDateString()
+      : 'TBA';
+    const eventTime = order.event.startDate
+      ? new Date(order.event.startDate).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null;
+
+    const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
+      /\/$/,
+      '',
+    );
+    const toAbsolute = (u?: string | null) => {
+      if (!u?.trim()) return null;
+      const clean = u.trim();
+      if (/^https?:\/\//i.test(clean)) return clean;
+      return `${base}${clean.startsWith('/') ? '' : '/'}${clean}`;
+    };
+
+    const passes = order.tickets.map((t) => ({
+      id: t.id,
+      qrCode: t.qrCode,
+      ticketTypeName: t.ticketType?.name || 'General Admission',
+      eventTitle: order.event.title,
+      eventDate,
+      eventTime,
+      eventLocation: order.event.location || 'TBA',
+      eventImageUrl: toAbsolute(order.event.imageUrl),
+      accentColor: t.ticketType?.accentColor || null,
+      ticketStyle: t.ticketType?.ticketStyle || null,
+      organizerLogoUrl: toAbsolute(order.event.organization?.logo),
+    }));
+
+    const pdfBuffer = await buildConsolidatedTicketPdf(passes);
+    const safeTitle = order.event.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .slice(0, 30);
+    const filename = `${safeTitle}-tickets-${order.tickets.length}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (error: any) {
+    console.error('[Admin] downloadOrderTicketsPdf error:', error);
+    return res.status(500).json({ message: error.message || 'Server error generating tickets PDF' });
+  }
+};
+
+/**
+ * Admin: Download all tickets for an order as a ZIP archive of separate individual PDF files.
+ * GET /admin/orders/:orderId/tickets-zip
+ */
+export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) => {
+  try {
+    const { orderId } = req.params;
+    const isNumeric = /^\d+$/.test(orderId);
+
+    const order = await prisma.order.findFirst({
+      where: isNumeric
+        ? { id: parseInt(orderId, 10) }
+        : { paymentReference: orderId },
+      include: {
+        event: {
+          include: { organization: true },
+        },
+        tickets: {
+          include: { ticketType: true, user: true },
+        },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const { buildTicketPdf } = await import('../services/ticketPdf');
+    const eventDate = order.event.startDate
+      ? new Date(order.event.startDate).toLocaleDateString()
+      : 'TBA';
+    const eventTime = order.event.startDate
+      ? new Date(order.event.startDate).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null;
+
+    const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
+      /\/$/,
+      '',
+    );
+    const toAbsolute = (u?: string | null) => {
+      if (!u?.trim()) return null;
+      const clean = u.trim();
+      if (/^https?:\/\//i.test(clean)) return clean;
+      return `${base}${clean.startsWith('/') ? '' : '/'}${clean}`;
+    };
+
+    const safeTitle = order.event.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .slice(0, 30);
+    const zipFilename = `${safeTitle}-tickets-separate-${order.tickets.length}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+
+    const archive = new ZipArchive({ zlib: { level: 6 } });
+    archive.pipe(res);
+
+    const validTickets = order.tickets.filter((t) => Boolean(t.qrCode));
+    const items = validTickets.map((t, i) => {
+      const fullName = `${t.user?.firstName || ''} ${t.user?.lastName || ''}`.trim();
+      const guestName = fullName
+        ? fullName.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+        : '';
+
+      return {
+        filename: `ticket-${String(i + 1).padStart(2, '0')}-TKT-${String(t.id).padStart(6, '0')}${guestName ? `-${guestName}` : ''}.pdf`,
+        pass: {
+          id: t.id,
+          qrCode: t.qrCode,
+          ticketTypeName: t.ticketType?.name || 'General Admission',
+          eventTitle: order.event.title,
+          eventDate,
+          eventTime,
+          eventLocation: order.event.location || 'TBA',
+          eventImageUrl: toAbsolute(order.event.imageUrl),
+          accentColor: t.ticketType?.accentColor || null,
+          ticketStyle: t.ticketType?.ticketStyle || null,
+          organizerLogoUrl: toAbsolute(order.event.organization?.logo),
+        },
+      };
+    });
+
+    // Render in parallel batches of 10 for blazing fast generation
+    for (let i = 0; i < items.length; i += 10) {
+      const chunk = items.slice(i, i + 10);
+      const rendered = await Promise.all(
+        chunk.map(async (item) => ({
+          filename: item.filename,
+          buffer: await buildTicketPdf(item.pass),
+        }))
+      );
+      for (const r of rendered) {
+        archive.append(r.buffer, { name: r.filename });
+      }
+    }
+
+    await archive.finalize();
+  } catch (error: any) {
+    console.error('[Admin] downloadOrderTicketsZip error:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ message: error.message || 'Server error generating tickets zip' });
+    }
+  }
+};
+
+/**
+ * Admin: Download a single standalone ticket as PDF.
+ * GET /admin/tickets/:ticketId/pdf
+ */
+export const downloadSingleTicketPdf = async (req: AuthRequest, res: Response) => {
+  try {
+    const { ticketId } = req.params;
+    const id = parseInt(ticketId, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid ticket ID' });
+    }
+
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      include: {
+        event: { include: { organization: true } },
+        ticketType: true,
+        user: true,
+      },
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    const { buildTicketPdf } = await import('../services/ticketPdf');
+    const eventDate = ticket.event.startDate
+      ? new Date(ticket.event.startDate).toLocaleDateString()
+      : 'TBA';
+    const eventTime = ticket.event.startDate
+      ? new Date(ticket.event.startDate).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null;
+
+    const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
+      /\/$/,
+      '',
+    );
+    const toAbsolute = (u?: string | null) => {
+      if (!u?.trim()) return null;
+      const clean = u.trim();
+      if (/^https?:\/\//i.test(clean)) return clean;
+      return `${base}${clean.startsWith('/') ? '' : '/'}${clean}`;
+    };
+
+    const pass = {
+      id: ticket.id,
+      qrCode: ticket.qrCode,
+      ticketTypeName: ticket.ticketType?.name || 'General Admission',
+      eventTitle: ticket.event.title,
+      eventDate,
+      eventTime,
+      eventLocation: ticket.event.location || 'TBA',
+      eventImageUrl: toAbsolute(ticket.event.imageUrl),
+      accentColor: ticket.ticketType?.accentColor || null,
+      ticketStyle: ticket.ticketType?.ticketStyle || null,
+      organizerLogoUrl: toAbsolute(ticket.event.organization?.logo),
+    };
+
+    const pdfBuffer = await buildTicketPdf(pass);
+    const serial = `TKT-${String(ticket.id).padStart(6, '0')}`;
+    const filename = `ticket-${serial}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (error: any) {
+    console.error('[Admin] downloadSingleTicketPdf error:', error);
+    return res.status(500).json({ message: error.message || 'Server error generating ticket PDF' });
   }
 };

@@ -25,6 +25,9 @@ import {
   approvePayout,
   rejectPayout,
   createAssistedSaleOrder,
+  downloadOrderTicketsPdf,
+  downloadOrderTicketsZip,
+  downloadSingleTicketPdf,
 } from '../controllers/admin';
 import {
   resolvePaystackPayment,
@@ -92,6 +95,9 @@ router.get('/payments/pending', listPendingPaymentIntents);
 router.post('/payments/sweep-pending', sweepPendingPaymentIntents);
 router.post('/orders/:orderId/resend-tickets', resendOrderTicketsAdmin);
 router.post('/orders/assisted-sale', createAssistedSaleOrder);
+router.get('/orders/:orderId/tickets-pdf', downloadOrderTicketsPdf);
+router.get('/orders/:orderId/tickets-zip', downloadOrderTicketsZip);
+router.get('/tickets/:ticketId/pdf', downloadSingleTicketPdf);
 router.get('/support/tickets', getSupportTickets);
 router.get('/support/tickets/:id', getSupportTicketById);
 router.post('/support/tickets/:id/replies', replyToSupportTicket);
