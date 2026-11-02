@@ -92,10 +92,10 @@ export function optimizeImageUrlForTicket(url?: string | null): string | null {
     }
   }
 
-  // Unsplash: limit width to 600px and quality 75
+  // Unsplash: limit width to 600px, quality 75, force format JPG (never auto=format as browsers request AVIF)
   if (clean.includes('images.unsplash.com')) {
     const base = clean.split('?')[0];
-    return `${base}?w=600&q=75&auto=format&fit=crop`;
+    return `${base}?w=600&q=75&fm=jpg&fit=crop`;
   }
 
   return clean;
@@ -337,11 +337,15 @@ async function drawTicketPassPage(
     color: rgb(1, 1, 1),
   });
 
-  y -= 14;
+  // Date & Time anchored near the bottom of the photo section (above splitY)
+  const dividerY = splitY + 46;
+  const dateLabelY = splitY + 32;
+  const dateValueY = splitY + 18;
+
   // Subtle divider line
   page.drawRectangle({
     x: pad,
-    y: y + 4,
+    y: dividerY,
     width: W - pad * 2,
     height: 0.5,
     color: rgb(1, 1, 1),
@@ -350,31 +354,40 @@ async function drawTicketPassPage(
 
   page.drawText('DATE', {
     x: pad,
-    y,
+    y: dateLabelY,
     size: 6.5,
     font: fontBold,
     color: rgb(0.7, 0.7, 0.72),
   });
-  y -= 11;
-  page.drawText(truncate((pass.eventDate || 'TBA').toUpperCase(), fontBold, 9.5, pass.eventTime ? 160 : W - pad * 2), {
+  page.drawText(truncate((pass.eventDate || 'TBA').toUpperCase(), fontBold, 9.5, pass.eventTime ? 150 : W - pad * 2), {
     x: pad,
-    y,
+    y: dateValueY,
     size: 9.5,
     font: fontBold,
     color: rgb(1, 1, 1),
   });
 
   if (pass.eventTime) {
+    // Subtle vertical separator between DATE and TIME
+    page.drawRectangle({
+      x: pad + 160,
+      y: dateValueY - 1,
+      width: 0.5,
+      height: 22,
+      color: rgb(1, 1, 1),
+      opacity: 0.2,
+    });
+
     page.drawText('TIME', {
       x: pad + 175,
-      y: y + 11,
+      y: dateLabelY,
       size: 6.5,
       font: fontBold,
       color: rgb(0.7, 0.7, 0.72),
     });
     page.drawText(truncate(pass.eventTime.toUpperCase(), fontBold, 9.5, 120), {
       x: pad + 175,
-      y,
+      y: dateValueY,
       size: 9.5,
       font: fontBold,
       color: rgb(1, 1, 1),

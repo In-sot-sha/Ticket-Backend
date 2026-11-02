@@ -1695,15 +1695,17 @@ export const downloadOrderTicketsPdf = async (req: AuthRequest, res: Response) =
         })
       : null;
 
-    const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
-      /\/$/,
-      '',
-    );
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_BASE_URL ||
+      process.env.EMAIL_ASSET_BASE ||
+      'https://api.partystorm.ng'
+    ).replace(/\/$/, '');
     const toAbsolute = (u?: string | null) => {
       if (!u?.trim()) return null;
       const clean = u.trim();
       if (/^https?:\/\//i.test(clean)) return clean;
-      return `${base}${clean.startsWith('/') ? '' : '/'}${clean}`;
+      return `${backendBase}${clean.startsWith('/') ? '' : '/'}${clean}`;
     };
 
     const passes = order.tickets.map((t) => ({
@@ -1769,15 +1771,17 @@ export const getOrderTicketsData = async (req: AuthRequest, res: Response) => {
     }
 
     const { optimizeImageUrlForTicket } = await import('../services/ticketPdf');
-    const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
-      /\/$/,
-      '',
-    );
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_BASE_URL ||
+      process.env.EMAIL_ASSET_BASE ||
+      'https://api.partystorm.ng'
+    ).replace(/\/$/, '');
     const toAbsolute = (u?: string | null) => {
       if (!u?.trim()) return null;
       const clean = u.trim();
       if (/^https?:\/\//i.test(clean)) return clean;
-      return `${base}${clean.startsWith('/') ? '' : '/'}${clean}`;
+      return `${backendBase}${clean.startsWith('/') ? '' : '/'}${clean}`;
     };
 
     const eventDate = order.event.startDate
@@ -1855,15 +1859,17 @@ export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) =
         })
       : null;
 
-    const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
-      /\/$/,
-      '',
-    );
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_BASE_URL ||
+      process.env.EMAIL_ASSET_BASE ||
+      'https://api.partystorm.ng'
+    ).replace(/\/$/, '');
     const toAbsolute = (u?: string | null) => {
       if (!u?.trim()) return null;
       const clean = u.trim();
       if (/^https?:\/\//i.test(clean)) return clean;
-      return `${base}${clean.startsWith('/') ? '' : '/'}${clean}`;
+      return `${backendBase}${clean.startsWith('/') ? '' : '/'}${clean}`;
     };
 
     const safeTitle = order.event.title
@@ -1997,15 +2003,17 @@ export const downloadSingleTicketPdf = async (req: AuthRequest, res: Response) =
         })
       : null;
 
-    const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
-      /\/$/,
-      '',
-    );
+    const backendBase = (
+      process.env.BACKEND_URL ||
+      process.env.API_BASE_URL ||
+      process.env.EMAIL_ASSET_BASE ||
+      'https://api.partystorm.ng'
+    ).replace(/\/$/, '');
     const toAbsolute = (u?: string | null) => {
       if (!u?.trim()) return null;
       const clean = u.trim();
       if (/^https?:\/\//i.test(clean)) return clean;
-      return `${base}${clean.startsWith('/') ? '' : '/'}${clean}`;
+      return `${backendBase}${clean.startsWith('/') ? '' : '/'}${clean}`;
     };
 
     const pass = {
