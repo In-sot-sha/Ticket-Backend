@@ -1764,7 +1764,7 @@ export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) =
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    const { buildTicketPdf } = await import('../services/ticketPdf');
+    const { buildTicketPdf, preloadTicketImages } = await import('../services/ticketPdf');
     const eventDate = order.event.startDate
       ? new Date(order.event.startDate).toLocaleDateString()
       : 'TBA';
@@ -1792,9 +1792,6 @@ export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) =
       .slice(0, 30);
     const zipFilename = `${safeTitle}-tickets-separate-${order.tickets.length}.zip`;
 
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
-
     // Dynamically load archiver with CJS and ESM fallback so Vercel never crashes on ERR_REQUIRE_ESM
     let archiverMod: any;
     try {
@@ -1815,9 +1812,21 @@ export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) =
           ? new archiverFactory.ZipArchive({ zlib: { level: 6 } })
           : archiverFactory.create('zip', { zlib: { level: 6 } });
 
-    archive.pipe(res);
+    // Buffer zip into memory to prevent serverless stream cutoff or freezing on Vercel
+    const chunks: Buffer[] = [];
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const archiveDone = new Promise<void>((resolve, reject) => {
+      archive.on('end', resolve);
+      archive.on('error', reject);
+    });
 
     const validTickets = order.tickets.filter((t) => Boolean(t.qrCode));
+    const bannerUrl = toAbsolute(order.event.imageUrl);
+    const logoUrl = toAbsolute(order.event.organization?.logo);
+
+    // Preload shared event images ONCE to avoid 40 sequential network fetches
+    const preloaded = await preloadTicketImages(bannerUrl, logoUrl);
+
     const items = validTickets.map((t, i) => {
       const fullName = `${t.user?.firstName || ''} ${t.user?.lastName || ''}`.trim();
       const guestName = fullName
@@ -1834,10 +1843,10 @@ export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) =
           eventDate,
           eventTime,
           eventLocation: order.event.location || 'TBA',
-          eventImageUrl: toAbsolute(order.event.imageUrl),
+          eventImageUrl: bannerUrl,
           accentColor: t.ticketType?.accentColor || null,
           ticketStyle: t.ticketType?.ticketStyle || null,
-          organizerLogoUrl: toAbsolute(order.event.organization?.logo),
+          organizerLogoUrl: logoUrl,
         },
       };
     });
@@ -1848,7 +1857,7 @@ export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) =
       const rendered = await Promise.all(
         chunk.map(async (item) => ({
           filename: item.filename,
-          buffer: await buildTicketPdf(item.pass),
+          buffer: await buildTicketPdf(item.pass, preloaded),
         }))
       );
       for (const r of rendered) {
@@ -1857,6 +1866,13 @@ export const downloadOrderTicketsZip = async (req: AuthRequest, res: Response) =
     }
 
     await archive.finalize();
+    await archiveDone;
+
+    const zipBuffer = Buffer.concat(chunks);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+    res.setHeader('Content-Length', zipBuffer.length);
+    return res.end(zipBuffer);
   } catch (error: any) {
     console.error('[Admin] downloadOrderTicketsZip error:', error);
     if (!res.headersSent) {

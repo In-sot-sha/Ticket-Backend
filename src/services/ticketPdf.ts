@@ -88,7 +88,8 @@ async function fetchImageBytes(url: string): Promise<{ bytes: Uint8Array; kind: 
   }
 
   try {
-    const res = await fetch(cleanUrl);
+    // 3.5s timeout prevents hanging on slow/blocked external hosts on serverless
+    const res = await fetch(cleanUrl, { signal: AbortSignal.timeout(3500) });
     if (!res.ok) return null;
     const buf = new Uint8Array(await res.arrayBuffer());
     const ct = (res.headers.get('content-type') || '').toLowerCase();
@@ -104,6 +105,23 @@ async function fetchImageBytes(url: string): Promise<{ bytes: Uint8Array; kind: 
   } catch {
     return null;
   }
+}
+
+export type PreloadedTicketImages = {
+  bannerData?: { bytes: Uint8Array; kind: 'png' | 'jpg' } | null;
+  logoData?: { bytes: Uint8Array; kind: 'png' | 'jpg' } | null;
+};
+
+/** Preload ticket banner and host logo once in parallel with strict timeout */
+export async function preloadTicketImages(
+  bannerUrl?: string | null,
+  logoUrl?: string | null,
+): Promise<PreloadedTicketImages> {
+  const [bannerData, logoData] = await Promise.all([
+    bannerUrl?.trim() ? fetchImageBytes(bannerUrl.trim()) : Promise.resolve(null),
+    logoUrl?.trim() ? fetchImageBytes(logoUrl.trim()) : Promise.resolve(null),
+  ]);
+  return { bannerData, logoData };
 }
 
 async function embedImage(
@@ -486,19 +504,40 @@ async function drawTicketPassPage(
 /**
  * Vertical portrait pass matching mobile screens (420×700).
  */
-export async function buildTicketPdf(pass: TicketPdfPass): Promise<Buffer> {
+export async function buildTicketPdf(
+  pass: TicketPdfPass,
+  preloaded?: PreloadedTicketImages,
+): Promise<Buffer> {
   const doc = await PDFDocument.create();
   const page = doc.addPage([420, 700]);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
 
-  const banner =
-    (await embedImage(doc, pass.eventImageUrl)) ||
-    (await embedImage(
-      doc,
-      'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=1200&q=80',
-    ));
-  const logo = await embedImage(doc, pass.organizerLogoUrl);
+  let banner: PDFImage | null = null;
+  if (preloaded?.bannerData) {
+    try {
+      banner = preloaded.bannerData.kind === 'jpg'
+        ? await doc.embedJpg(preloaded.bannerData.bytes)
+        : await doc.embedPng(preloaded.bannerData.bytes);
+    } catch {
+      banner = null;
+    }
+  } else if (pass.eventImageUrl) {
+    banner = await embedImage(doc, pass.eventImageUrl);
+  }
+
+  let logo: PDFImage | null = null;
+  if (preloaded?.logoData) {
+    try {
+      logo = preloaded.logoData.kind === 'jpg'
+        ? await doc.embedJpg(preloaded.logoData.bytes)
+        : await doc.embedPng(preloaded.logoData.bytes);
+    } catch {
+      logo = null;
+    }
+  } else if (pass.organizerLogoUrl) {
+    logo = await embedImage(doc, pass.organizerLogoUrl);
+  }
 
   await drawTicketPassPage(doc, page, font, fontBold, banner, logo, pass);
   const pdfBytes = await doc.save();
@@ -523,12 +562,7 @@ export async function buildConsolidatedTicketPdf(passes: TicketPdfPass[]): Promi
 
   // Pre-embed images once for the whole document
   const firstPass = validPasses[0];
-  const banner =
-    (await embedImage(doc, firstPass.eventImageUrl)) ||
-    (await embedImage(
-      doc,
-      'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=1200&q=80',
-    ));
+  const banner = await embedImage(doc, firstPass.eventImageUrl);
   const logo = await embedImage(doc, firstPass.organizerLogoUrl);
 
   for (const pass of validPasses) {
