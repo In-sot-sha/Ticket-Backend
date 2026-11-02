@@ -27,6 +27,7 @@ import {
   createAssistedSaleOrder,
   downloadOrderTicketsPdf,
   downloadOrderTicketsZip,
+  getOrderTicketsData,
   downloadSingleTicketPdf,
 } from '../controllers/admin';
 import {
@@ -97,6 +98,7 @@ router.post('/orders/:orderId/resend-tickets', resendOrderTicketsAdmin);
 router.post('/orders/assisted-sale', createAssistedSaleOrder);
 router.get('/orders/:orderId/tickets-pdf', downloadOrderTicketsPdf);
 router.get('/orders/:orderId/tickets-zip', downloadOrderTicketsZip);
+router.get('/orders/:orderId/tickets-data', getOrderTicketsData);
 router.get('/tickets/:ticketId/pdf', downloadSingleTicketPdf);
 router.get('/support/tickets', getSupportTickets);
 router.get('/support/tickets/:id', getSupportTicketById);

@@ -1725,7 +1725,10 @@ export const downloadOrderTicketsPdf = async (req: AuthRequest, res: Response) =
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .slice(0, 30);
-    const filename = `${safeTitle}-tickets-${order.tickets.length}.pdf`;
+    const filename =
+      order.tickets.length === 1
+        ? `${safeTitle}-TKT-${String(order.tickets[0].id).padStart(6, '0')}.pdf`
+        : `${safeTitle}-tickets-${order.tickets.length}.pdf`;
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -1734,6 +1737,83 @@ export const downloadOrderTicketsPdf = async (req: AuthRequest, res: Response) =
   } catch (error: any) {
     console.error('[Admin] downloadOrderTicketsPdf error:', error);
     return res.status(500).json({ message: error.message || 'Server error generating tickets PDF' });
+  }
+};
+
+/**
+ * Admin: Get lightweight JSON data for all tickets in an order so the frontend
+ * can generate the vertical ticket PDFs and ZIP 100% client-side with 0 timeouts.
+ * GET /admin/orders/:orderId/tickets-data
+ */
+export const getOrderTicketsData = async (req: AuthRequest, res: Response) => {
+  try {
+    const { orderId } = req.params;
+    const isNumeric = /^\d+$/.test(orderId);
+
+    const order = await prisma.order.findFirst({
+      where: isNumeric
+        ? { id: parseInt(orderId, 10) }
+        : { paymentReference: orderId },
+      include: {
+        event: {
+          include: { organization: true },
+        },
+        tickets: {
+          include: { ticketType: true, user: true },
+        },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const { optimizeImageUrlForTicket } = await import('../services/ticketPdf');
+    const base = (process.env.EMAIL_ASSET_BASE || process.env.FRONTEND_URL || 'https://partystorm.ng').replace(
+      /\/$/,
+      '',
+    );
+    const toAbsolute = (u?: string | null) => {
+      if (!u?.trim()) return null;
+      const clean = u.trim();
+      if (/^https?:\/\//i.test(clean)) return clean;
+      return `${base}${clean.startsWith('/') ? '' : '/'}${clean}`;
+    };
+
+    const eventDate = order.event.startDate
+      ? new Date(order.event.startDate).toLocaleDateString()
+      : 'TBA';
+    const eventTime = order.event.startDate
+      ? new Date(order.event.startDate).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null;
+
+    const bannerUrl = optimizeImageUrlForTicket(toAbsolute(order.event.imageUrl));
+    const logoUrl = optimizeImageUrlForTicket(toAbsolute(order.event.organization?.logo));
+
+    return res.json({
+      orderId: order.id,
+      eventTitle: order.event.title,
+      eventDate,
+      eventTime,
+      eventLocation: order.event.location || 'TBA',
+      eventImageUrl: bannerUrl,
+      organizerName: order.event.organization?.name,
+      organizerLogoUrl: logoUrl,
+      ticketStyle: order.tickets[0]?.ticketType?.ticketStyle || null,
+      accentColor: order.tickets[0]?.ticketType?.accentColor || null,
+      tickets: order.tickets.map((t) => ({
+        id: t.id,
+        qrCode: t.qrCode,
+        ticketTypeName: t.ticketType?.name || 'General Admission',
+        guestName: `${t.user?.firstName || ''} ${t.user?.lastName || ''}`.trim(),
+      })),
+    });
+  } catch (error: any) {
+    console.error('[Admin] getOrderTicketsData error:', error);
+    return res.status(500).json({ message: error.message || 'Server error fetching order tickets data' });
   }
 };
 
