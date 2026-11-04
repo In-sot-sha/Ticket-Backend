@@ -1608,7 +1608,8 @@ export const createAssistedSaleOrder = async (req: AuthRequest, res: Response) =
             event,
             ticketType: { name: `${ticketType.name} × ${qty}` },
             tickets,
-            totalPrice: grossTotal,
+            // Send original undiscounted price (faceTotal) instead of discounted price (grossTotal)
+            totalPrice: faceTotal,
             quantity: qty,
             organizerName: event.organization?.name,
             organizerLogo: event.organization?.logo,

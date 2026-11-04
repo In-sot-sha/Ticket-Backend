@@ -324,7 +324,8 @@ export async function resendOrderTickets(input: {
       accentColor: primary?.accentColor,
     },
     tickets: order.tickets,
-    totalPrice: order.chargeAmount || order.totalAmount,
+    // Use original undiscounted price if available
+    totalPrice: order.originalAmount || order.chargeAmount || order.totalAmount,
     quantity: order.tickets.length,
     organizerName: order.event.organization?.name,
     organizerLogo: order.event.organization?.logo,
