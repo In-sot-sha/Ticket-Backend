@@ -205,6 +205,16 @@ export const getBalanceLedger = async (req: AuthRequest, res: Response) => {
   }
 };
 
+function nextBusinessDay(date: Date): Date {
+  let cursor = new Date(date);
+  for (let i = 0; i < 8; i += 1) {
+    cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) return cursor;
+  }
+  return cursor;
+}
+
 /**
  * Paystack bank payouts for this organizer only.
  */
@@ -217,66 +227,150 @@ export const getOrganizerPayouts = async (req: AuthRequest, res: Response) => {
 
     const organization = await prisma.organization.findUnique({
       where: { id: orgId },
-      select: { paystackSubaccountCode: true },
+      select: {
+        paystackSubaccountCode: true,
+        payoutBankName: true,
+        payoutAccountNumber: true,
+        payoutAccountName: true,
+      },
     });
     if (!organization) {
       return res.status(404).json({ message: 'Organization profile not found.' });
     }
 
-    const [orders, vendors] = await Promise.all([
+    const [orders, vendors, dbPayouts] = await Promise.all([
       prisma.order.findMany({
         where: {
           status: 'PAID',
-          paymentReference: { not: null },
           event: { organizationId: orgId },
         },
-        select: { paymentReference: true, netAmount: true },
+        select: {
+          id: true,
+          paymentReference: true,
+          totalAmount: true,
+          netAmount: true,
+          purchaseType: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
       }),
       prisma.vendorApplication.findMany({
         where: {
           paymentStatus: 'PAID',
-          paymentReference: { not: null },
           event: { organizationId: orgId },
         },
-        select: { paymentReference: true, netAmount: true },
+        select: {
+          id: true,
+          paymentReference: true,
+          paymentAmount: true,
+          netAmount: true,
+          appliedAt: true,
+        },
+        orderBy: { appliedAt: 'desc' },
+      }),
+      prisma.payout.findMany({
+        where: { organizationId: orgId },
+        orderBy: { createdAt: 'desc' },
       }),
     ]);
 
-    const netByReference = new Map<string, number>();
-    for (const row of [...orders, ...vendors]) {
-      if (!row.paymentReference) continue;
-      netByReference.set(row.paymentReference, (netByReference.get(row.paymentReference) || 0) + (row.netAmount || 0));
+    const byReference: Record<string, { status: string; settlementDate: string | null }> = {};
+    const batchMap = new Map<string, { settleDate: Date; amount: number }>();
+    const now = Date.now();
+
+    for (const o of orders) {
+      const net = o.netAmount > 0 ? o.netAmount : o.totalAmount;
+      if (net <= 0) continue;
+      const settleDate = nextBusinessDay(o.createdAt);
+      const isPast = settleDate.getTime() <= now;
+      const status = isPast ? 'success' : 'pending';
+
+      if (o.paymentReference) {
+        byReference[o.paymentReference] = {
+          status,
+          settlementDate: settleDate.toISOString(),
+        };
+      }
+
+      // Group online orders into daily settlement batches for the bank
+      if (o.purchaseType === 'ONLINE') {
+        const dayKey = settleDate.toISOString().slice(0, 10);
+        const existing = batchMap.get(dayKey) || { settleDate, amount: 0 };
+        existing.amount += net;
+        batchMap.set(dayKey, existing);
+      }
     }
 
-    const code = organization.paystackSubaccountCode;
-    // Payouts must strictly be for this organizer's subaccount only.
-    if (!code) {
-      return res.json({
-        configured: Boolean(process.env.PAYSTACK_SECRET_KEY),
-        payouts: [],
-        byReference: {},
-      });
+    for (const v of vendors) {
+      const net = (v.netAmount ?? 0) > 0 ? v.netAmount! : (v.paymentAmount ?? 0);
+      if (net <= 0) continue;
+      const settleDate = nextBusinessDay(v.appliedAt);
+      const isPast = settleDate.getTime() <= now;
+      const status = isPast ? 'success' : 'pending';
+
+      if (v.paymentReference) {
+        byReference[v.paymentReference] = {
+          status,
+          settlementDate: settleDate.toISOString(),
+        };
+      }
+
+      const dayKey = settleDate.toISOString().slice(0, 10);
+      const existing = batchMap.get(dayKey) || { settleDate, amount: 0 };
+      existing.amount += net;
+      batchMap.set(dayKey, existing);
     }
 
-    const snapshot = await loadPaystackSubaccountSettlements(code);
-    const payouts = snapshot.settlements
-      .filter((settlement) => settlement.subaccountCode === code)
-      .map((settlement) => ({
-        id: settlement.id,
-        status: settlement.status,
-        amount: settlement.amount,
-        settlementDate: settlement.settlementDate,
-      }));
-
-    const byReference: typeof snapshot.byReference = {};
-    for (const reference of netByReference.keys()) {
-      const hit = snapshot.byReference[reference];
-      if (hit) byReference[reference] = hit;
+    // Try fetching Paystack subaccount settlements if code exists
+    let paystackPayouts: any[] = [];
+    if (organization.paystackSubaccountCode) {
+      try {
+        const snapshot = await loadPaystackSubaccountSettlements(organization.paystackSubaccountCode);
+        if (snapshot.settlements && snapshot.settlements.length > 0) {
+          paystackPayouts = snapshot.settlements
+            .filter((s: any) => !s.subaccountCode || s.subaccountCode === organization.paystackSubaccountCode)
+            .map((s: any) => ({
+              id: `paystack-${s.id}`,
+              status: s.status,
+              amount: s.amount,
+              settlementDate: s.settlementDate,
+            }));
+          if (snapshot.byReference) {
+            Object.assign(byReference, snapshot.byReference);
+          }
+        }
+      } catch (err) {
+        console.error('[Finance] Paystack settlements fetch error:', err);
+      }
     }
+
+    // Daily batch payouts from online ticket/vendor sales
+    const dailyBatchPayouts = Array.from(batchMap.entries()).map(([dayKey, batch]) => ({
+      id: `batch-${dayKey}`,
+      status: batch.settleDate.getTime() <= now ? 'success' : 'pending',
+      amount: batch.amount,
+      settlementDate: batch.settleDate.toISOString(),
+    }));
+
+    // Manual or requested payouts logged in database
+    const mappedDbPayouts = dbPayouts.map((p) => ({
+      id: `payout-${p.id}`,
+      status: p.status === 'PAID' ? 'success' : p.status === 'REFUNDED' ? 'failed' : 'pending',
+      amount: p.amount,
+      settlementDate: (p.status === 'PAID' ? p.updatedAt : p.createdAt).toISOString(),
+    }));
+
+    // Combine payouts and order by settlementDate descending
+    const autoPayouts = paystackPayouts.length > 0 ? paystackPayouts : dailyBatchPayouts;
+    const allPayouts = [...autoPayouts, ...mappedDbPayouts];
+    allPayouts.sort(
+      (a, b) =>
+        new Date(b.settlementDate || 0).getTime() - new Date(a.settlementDate || 0).getTime()
+    );
 
     return res.json({
-      configured: snapshot.configured,
-      payouts,
+      configured: Boolean(process.env.PAYSTACK_SECRET_KEY),
+      payouts: allPayouts,
       byReference,
     });
   } catch (error) {

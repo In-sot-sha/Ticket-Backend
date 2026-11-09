@@ -178,18 +178,63 @@ async function buildEventStats(
     checkInsByTypeId.set(t.ticketTypeId, (checkInsByTypeId.get(t.ticketTypeId) || 0) + 1);
   }
 
+  // Fetch sold/used tickets to compute accurate organizer net per ticket type
+  const eventTickets = await prisma.ticket.findMany({
+    where: {
+      eventId,
+      status: { in: ['VALID', 'USED'] },
+    },
+    select: {
+      id: true,
+      ticketTypeId: true,
+      purchaseType: true,
+      amountPaid: true,
+      order: {
+        select: {
+          id: true,
+          status: true,
+          totalAmount: true,
+          netAmount: true,
+          platformFee: true,
+          _count: { select: { tickets: true } },
+        },
+      },
+    },
+  });
+
+  const netByTicketTypeId = new Map<number, number>();
+  for (const t of eventTickets) {
+    let tNet = 0;
+    if (t.order && t.order.status === 'PAID') {
+      const ticketCount = t.order._count?.tickets || 1;
+      if (t.order.netAmount > 0) {
+        tNet = t.order.netAmount / ticketCount;
+      } else if (t.order.totalAmount > 0) {
+        const unitPrice = t.order.totalAmount / ticketCount;
+        const feeShare = (t.order.platformFee || 0) / ticketCount;
+        tNet = Math.max(0, unitPrice - feeShare);
+      }
+    } else if (t.purchaseType === 'GATE') {
+      tNet = typeof t.amountPaid === 'number' && t.amountPaid > 0 ? t.amountPaid : 0;
+    }
+    netByTicketTypeId.set(t.ticketTypeId, (netByTicketTypeId.get(t.ticketTypeId) || 0) + tNet);
+  }
+
   let ticketsSold = 0;
   let actualRevenue = 0;
   let expectedRevenue = 0;
   let ticketInventory = 0;
+  let totalTicketNet = 0;
 
   const ticketTypeStats = ticketTypes.map((tt: any) => {
     const sold = countFor(tt.id, ['VALID', 'USED']);
     const checkedIn = checkInsByTypeId.get(tt.id) || 0;
     const revenue = tt.price * sold;
     const expected = tt.price * (tt.quantity ?? 0);
+    const netRevenue = Math.round(netByTicketTypeId.get(tt.id) || 0);
     ticketsSold += sold;
     actualRevenue += revenue;
+    totalTicketNet += netRevenue;
     expectedRevenue += expected;
     ticketInventory += tt.quantity ?? 0;
     return {
@@ -200,6 +245,7 @@ async function buildEventStats(
       sold,
       checkedIn,
       revenue,
+      netRevenue,
       expectedRevenue: expected,
     };
   });
@@ -207,10 +253,52 @@ async function buildEventStats(
   const ticketsCheckedIn = checkInTicketIdSet.size;
   const capacity = eventCapacity ?? ticketInventory;
 
+  const [orderNetAgg, vendorNetAgg, gateTicketAgg] = await Promise.all([
+    prisma.order.aggregate({
+      where: {
+        eventId,
+        status: 'PAID',
+      },
+      _sum: {
+        netAmount: true,
+      },
+    }),
+    prisma.vendorApplication.aggregate({
+      where: {
+        eventId,
+        paymentStatus: 'PAID',
+      },
+      _sum: {
+        netAmount: true,
+      },
+    }),
+    prisma.ticket.aggregate({
+      where: {
+        eventId,
+        purchaseType: 'GATE',
+        status: { in: ['VALID', 'USED'] },
+        orderId: null,
+      },
+      _sum: {
+        amountPaid: true,
+      },
+    }),
+  ]);
+
+  const orderNet = orderNetAgg._sum.netAmount ?? 0;
+  const vendorNet = vendorNetAgg._sum.netAmount ?? 0;
+  const gateNet = gateTicketAgg._sum.amountPaid ?? 0;
+
+  const netRevenue = Math.max(
+    orderNet + vendorNet + gateNet,
+    totalTicketNet + vendorNet
+  );
+
   return {
     ticketsSold,
     ticketsCheckedIn,
     actualRevenue,
+    netRevenue,
     expectedRevenue,
     capacity,
     ticketInventory,
@@ -1237,6 +1325,7 @@ export const getOrganizerEvents = async (req: AuthRequest, res: Response) => {
           ...rest,
           phase: getEventPhase(event.isPublished, event.startDate, event.endDate),
           revenue: stats.actualRevenue,
+          netRevenue: stats.netRevenue,
           attendees: stats.ticketsSold,
           stats,
         };
@@ -1329,6 +1418,7 @@ export const getOrganizerEventById = async (req: AuthRequest, res: Response) => 
       ...formattedEvent,
       phase: getEventPhase(formattedEvent.isPublished, formattedEvent.startDate, formattedEvent.endDate),
       revenue: stats.actualRevenue,
+      netRevenue: stats.netRevenue,
       attendees: stats.ticketsSold,
       stats,
     });
