@@ -76,7 +76,7 @@ export const getEventAttendanceTickets = async (req: AuthRequest, res: Response)
     const tickets = await prisma.ticket.findMany({
       where: {
         eventId: eventIdNum,
-        status: { in: ['VALID', 'USED'] }
+        ...(req.role === 'ADMIN' ? {} : { status: { in: ['VALID', 'USED'] } })
       },
       include: {
         user: ticketSafeUser,
