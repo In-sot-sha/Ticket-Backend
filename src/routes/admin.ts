@@ -29,6 +29,7 @@ import {
   downloadOrderTicketsZip,
   getOrderTicketsData,
   downloadSingleTicketPdf,
+  getEventFinancialReport,
 } from '../controllers/admin';
 import {
   resolvePaystackPayment,
@@ -111,6 +112,7 @@ router.get('/whatsapp/messages', getWhatsAppMessages);
 router.post('/whatsapp/messages/:id/retry', retryWhatsAppMessage);
 router.post('/whatsapp/test', testWhatsAppAdminConnection);
 router.get('/events', getAdminEvents);
+router.get('/events/:id/financial-report', getEventFinancialReport);
 router.put('/ticket-types/:id/platform-fee', updateTicketTypePlatformFee);
 router.put('/events/:id/promote', promoteEvent);
 router.post('/events/:id/transfer', transferEvent);

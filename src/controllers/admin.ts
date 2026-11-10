@@ -2044,3 +2044,411 @@ export const downloadSingleTicketPdf = async (req: AuthRequest, res: Response) =
     return res.status(500).json({ message: error.message || 'Server error generating ticket PDF' });
   }
 };
+
+export const getEventFinancialReport = async (req: AuthRequest, res: Response) => {
+  try {
+    const eventId = Number(req.params.id);
+    if (!Number.isFinite(eventId) || eventId <= 0) {
+      return res.status(400).json({ message: 'Invalid event ID' });
+    }
+
+    const event = await prisma.event.findUnique({
+      where: { id: eventId },
+      include: {
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            logo: true,
+            isVerified: true,
+            payoutBankName: true,
+            payoutAccountNumber: true,
+            payoutAccountName: true,
+            paystackSubaccountCode: true,
+          },
+        },
+        ticketTypes: {
+          select: {
+            id: true,
+            name: true,
+            price: true,
+            quantity: true,
+            platformFeeNaira: true,
+          },
+        },
+      },
+    });
+
+    if (!event) {
+      return res.status(404).json({ message: 'Event not found' });
+    }
+
+    // Determine event completion / phase
+    const now = new Date();
+    let statusText = 'UPCOMING';
+    if (now > event.endDate) {
+      statusText = 'COMPLETED';
+    } else if (now >= event.startDate && now <= event.endDate) {
+      statusText = 'LIVE';
+    }
+
+    // 1. Fetch all orders for this event
+    const orders = await prisma.order.findMany({
+      where: {
+        eventId,
+        status: 'PAID',
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+          },
+        },
+        tickets: {
+          select: {
+            id: true,
+            qrCode: true,
+            amountPaid: true,
+            paymentMethod: true,
+            ticketType: { select: { id: true, name: true, price: true } },
+          },
+        },
+        _count: { select: { tickets: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // 2. Fetch gate tickets sold directly without an Order
+    const gateTickets = await prisma.ticket.findMany({
+      where: {
+        eventId,
+        purchaseType: 'GATE',
+        status: { in: ['VALID', 'USED'] },
+        orderId: null,
+      },
+      include: {
+        ticketType: { select: { id: true, name: true, price: true } },
+        user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // 3. Fetch paid vendor applications (if any)
+    const vendorApps = await prisma.vendorApplication.findMany({
+      where: {
+        eventId,
+        paymentStatus: 'PAID',
+      },
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, email: true } },
+        vendorType: { select: { id: true, name: true, fee: true } },
+      },
+      orderBy: { appliedAt: 'desc' },
+    });
+
+    // 4. Breakdown Online Sales vs Direct/Assisted Sales
+    let onlineOrdersCount = 0;
+    let onlineTicketsCount = 0;
+    let onlineGross = 0;
+    let onlinePlatformFees = 0;
+    let onlineProcessingFees = 0;
+    let onlineNet = 0;
+
+    let assistedOrdersCount = 0;
+    let assistedTicketsCount = 0;
+    let assistedOriginalFaceTotal = 0;
+    let assistedDiscountsTotal = 0;
+    let assistedGrossCollected = 0;
+    let assistedPlatformFees = 0;
+    let assistedNet = 0;
+    const assistedMethodMap = {
+      TRANSFER: { count: 0, gross: 0, net: 0 },
+      POS: { count: 0, gross: 0, net: 0 },
+      CASH: { count: 0, gross: 0, net: 0 },
+      OTHER: { count: 0, gross: 0, net: 0 },
+    };
+
+    for (const o of orders) {
+      const ticketsCount = o._count?.tickets || o.tickets?.length || 0;
+      if (o.purchaseType === 'ONLINE') {
+        onlineOrdersCount += 1;
+        onlineTicketsCount += ticketsCount;
+        onlineGross += o.totalAmount;
+        onlinePlatformFees += o.platformFee || 0;
+        onlineProcessingFees += o.processingFee || 0;
+        onlineNet += o.netAmount;
+      } else {
+        // ASSISTED / DIRECT SALE
+        assistedOrdersCount += 1;
+        assistedTicketsCount += ticketsCount;
+        const face = o.originalAmount != null && o.originalAmount > 0
+          ? o.originalAmount
+          : o.totalAmount + (o.discountAmount || 0);
+        assistedOriginalFaceTotal += face;
+        assistedDiscountsTotal += o.discountAmount || 0;
+        assistedGrossCollected += o.totalAmount;
+        assistedPlatformFees += o.platformFee || 0;
+        assistedNet += o.netAmount;
+
+        const ticketMethod = o.tickets?.[0]?.paymentMethod || 'TRANSFER';
+        const methodKey = ['TRANSFER', 'POS', 'CASH'].includes(ticketMethod)
+          ? (ticketMethod as 'TRANSFER' | 'POS' | 'CASH')
+          : 'OTHER';
+        assistedMethodMap[methodKey].count += 1;
+        assistedMethodMap[methodKey].gross += o.totalAmount;
+        assistedMethodMap[methodKey].net += o.netAmount;
+      }
+    }
+
+    // Gate sales totals
+    let gateTicketsCount = 0;
+    let gateGrossCollected = 0;
+    const gateMethodMap = {
+      CASH: { count: 0, gross: 0 },
+      POS: { count: 0, gross: 0 },
+      TRANSFER: { count: 0, gross: 0 },
+    };
+
+    for (const gt of gateTickets) {
+      gateTicketsCount += 1;
+      const amount = Number(gt.amountPaid) || 0;
+      gateGrossCollected += amount;
+      const m = (gt.paymentMethod as 'CASH' | 'POS' | 'TRANSFER') || 'CASH';
+      if (gateMethodMap[m]) {
+        gateMethodMap[m].count += 1;
+        gateMethodMap[m].gross += amount;
+      }
+    }
+    const gateNet = gateGrossCollected;
+
+    // Vendor stalls totals
+    let vendorStallsCount = 0;
+    let vendorGross = 0;
+    let vendorPlatformFees = 0;
+    let vendorProcessingFees = 0;
+    let vendorNet = 0;
+    for (const v of vendorApps) {
+      vendorStallsCount += 1;
+      vendorGross += Number(v.paymentAmount) || 0;
+      vendorPlatformFees += Number(v.platformFee) || 0;
+      vendorProcessingFees += Number(v.processingFee) || 0;
+      vendorNet += Number(v.netAmount) || 0;
+    }
+
+    // Consolidated totals
+    const totalTicketsSold = onlineTicketsCount + assistedTicketsCount + gateTicketsCount;
+    const grossTicketRevenue = onlineGross + assistedGrossCollected + gateGrossCollected;
+    const grossRevenue = grossTicketRevenue + vendorGross;
+    const gatewayCharges = onlineProcessingFees + vendorProcessingFees;
+    const partyStormFees = onlinePlatformFees + assistedPlatformFees + vendorPlatformFees;
+    const otherDeductions = assistedDiscountsTotal;
+    const totalDeductions = gatewayCharges + partyStormFees + otherDeductions;
+    const netOrganizerProceeds = onlineNet + assistedNet + gateNet + vendorNet;
+    const netPayable = netOrganizerProceeds;
+
+    // Settlement status
+    const payouts = event.organization?.id
+      ? await prisma.payout.findMany({
+          where: {
+            organizationId: event.organization.id,
+            status: 'PAID',
+          },
+          select: {
+            id: true,
+            amount: true,
+            status: true,
+            reference: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        })
+      : [];
+
+    const totalTransferred = payouts.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+    // If the organization uses automatic Paystack subaccount, note it
+    const isAutomaticPaystackSettlement = Boolean(event.organization?.paystackSubaccountCode);
+    const paystackNet = onlineNet + vendorNet;
+    const paystackSettled = isAutomaticPaystackSettlement ? paystackNet : 0;
+    const paystackOutstanding = isAutomaticPaystackSettlement ? 0 : paystackNet;
+
+    const directTransferNet = assistedNet;
+    const directTransferSettled = totalTransferred;
+    const directTransferOutstanding = Math.max(0, directTransferNet - directTransferSettled);
+
+    const totalTransferredAll = paystackSettled + directTransferSettled;
+    const totalOutstandingAll = paystackOutstanding + directTransferOutstanding;
+
+    // Format itemized records list
+    const transactions = [
+      ...orders.map((o) => {
+        const isOnline = o.purchaseType === 'ONLINE';
+        const method = isOnline ? 'ONLINE' : (o.tickets?.[0]?.paymentMethod || 'TRANSFER');
+        const buyerName = o.user
+          ? `${o.user.firstName} ${o.user.lastName || ''}`.trim()
+          : (o.tickets?.[0] as any)?.buyerName || 'Guest';
+        const buyerEmail = o.user?.email || (o.tickets?.[0] as any)?.buyerEmail || '—';
+        const buyerPhone = o.user?.phone || (o.tickets?.[0] as any)?.buyerPhone || '—';
+        const ticketSummary = (o.tickets || []).map((t: any) => t.ticketType?.name).filter(Boolean);
+        const uniqueTiers = Array.from(new Set(ticketSummary)).join(', ') || 'Ticket';
+
+        return {
+          id: `ORD-${o.id}`,
+          orderId: o.id,
+          reference: o.paymentReference || `#${o.id}`,
+          channel: isOnline ? 'Online' : 'Direct / Assisted',
+          channelType: o.purchaseType,
+          paymentMethod: method,
+          buyerName,
+          buyerEmail,
+          buyerPhone,
+          tierName: uniqueTiers,
+          ticketsCount: o._count?.tickets || o.tickets?.length || 1,
+          originalAmount: o.originalAmount || (o.totalAmount + (o.discountAmount || 0)),
+          discountAmount: o.discountAmount || 0,
+          grossAmount: o.totalAmount,
+          gatewayFee: o.processingFee || 0,
+          platformFee: o.platformFee || 0,
+          netAmount: o.netAmount,
+          createdAt: o.createdAt,
+        };
+      }),
+      ...gateTickets.map((t) => ({
+        id: `GATE-${t.id}`,
+        orderId: null,
+        reference: t.qrCode ? `QR-${t.qrCode}` : `GT-${t.id}`,
+        channel: 'Gate Sale',
+        channelType: 'GATE',
+        paymentMethod: t.paymentMethod || 'CASH',
+        buyerName: t.user ? `${t.user.firstName} ${t.user.lastName || ''}`.trim() : 'Gate Walk-In',
+        buyerEmail: t.user?.email || '—',
+        buyerPhone: t.user?.phone || '—',
+        tierName: t.ticketType?.name || 'General Admission',
+        ticketsCount: 1,
+        originalAmount: Number(t.amountPaid) || 0,
+        discountAmount: 0,
+        grossAmount: Number(t.amountPaid) || 0,
+        gatewayFee: 0,
+        platformFee: 0,
+        netAmount: Number(t.amountPaid) || 0,
+        createdAt: t.createdAt,
+      })),
+      ...vendorApps.map((v) => ({
+        id: `VEN-${v.id}`,
+        orderId: null,
+        reference: v.paymentReference || `V-${v.id}`,
+        channel: 'Vendor Stall',
+        channelType: 'VENDOR',
+        paymentMethod: 'ONLINE',
+        buyerName: v.user ? `${v.user.firstName} ${v.user.lastName || ''}`.trim() : 'Vendor Applicant',
+        buyerEmail: v.user?.email || '—',
+        buyerPhone: '—',
+        tierName: v.vendorType?.name ? `Stall: ${v.vendorType.name}` : 'Vendor Stall',
+        ticketsCount: 1,
+        originalAmount: Number(v.paymentAmount) || 0,
+        discountAmount: 0,
+        grossAmount: Number(v.paymentAmount) || 0,
+        gatewayFee: Number(v.processingFee) || 0,
+        platformFee: Number(v.platformFee) || 0,
+        netAmount: Number(v.netAmount) || 0,
+        createdAt: v.appliedAt,
+      })),
+    ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return res.json({
+      event: {
+        id: event.id,
+        title: event.title,
+        slug: event.slug,
+        startDate: event.startDate,
+        endDate: event.endDate,
+        status: statusText,
+        organization: event.organization,
+      },
+      summary: {
+        totalTicketsSold,
+        grossTicketRevenue,
+        grossRevenue,
+        totalDeductions,
+        netOrganizerProceeds,
+        netPayable,
+      },
+      reconciliation: {
+        grossTicketRevenue,
+        gatewayCharges,
+        partyStormFees,
+        otherDeductions,
+        netPayable,
+      },
+      channels: {
+        online: {
+          ordersCount: onlineOrdersCount,
+          ticketsCount: onlineTicketsCount,
+          gross: onlineGross,
+          gatewayCharges: onlineProcessingFees,
+          partyStormFees: onlinePlatformFees,
+          net: onlineNet,
+        },
+        assisted: {
+          ordersCount: assistedOrdersCount,
+          ticketsCount: assistedTicketsCount,
+          originalAmount: assistedOriginalFaceTotal,
+          discountAmount: assistedDiscountsTotal,
+          grossCollected: assistedGrossCollected,
+          partyStormFees: assistedPlatformFees,
+          net: assistedNet,
+          methods: assistedMethodMap,
+        },
+        gate: {
+          ticketsCount: gateTicketsCount,
+          grossCollected: gateGrossCollected,
+          net: gateNet,
+          methods: gateMethodMap,
+        },
+        vendor: {
+          stallsCount: vendorStallsCount,
+          gross: vendorGross,
+          partyStormFees: vendorPlatformFees,
+          gatewayCharges: vendorProcessingFees,
+          net: vendorNet,
+        },
+      },
+      settlement: {
+        paystack: {
+          channel: 'Paystack (Online Checkout)',
+          netPayable: paystackNet,
+          amountTransferred: paystackSettled,
+          outstandingBalance: paystackOutstanding,
+          isAutomaticSplit: isAutomaticPaystackSettlement,
+          subaccountCode: event.organization?.paystackSubaccountCode || null,
+          status: isAutomaticPaystackSettlement ? 'Settled via Subaccount' : (paystackSettled > 0 ? 'Transferred' : 'Pending Gateway Payout'),
+        },
+        directTransfer: {
+          channel: 'Direct Transfer (Assisted Sales)',
+          netPayable: directTransferNet,
+          amountTransferred: directTransferSettled,
+          outstandingBalance: directTransferOutstanding,
+          status: directTransferOutstanding === 0 && directTransferNet > 0 ? 'Fully Transferred' : (directTransferSettled > 0 ? 'Partially Transferred' : 'Pending Transfer'),
+        },
+        amountTransferred: totalTransferredAll,
+        outstandingBalance: totalOutstandingAll,
+        isAutomaticPaystackSettlement,
+        paystackSubaccountCode: event.organization?.paystackSubaccountCode || null,
+        bankDetails: {
+          bankName: event.organization?.payoutBankName || null,
+          accountNumber: event.organization?.payoutAccountNumber || null,
+          accountName: event.organization?.payoutAccountName || null,
+        },
+        payouts,
+      },
+      transactions,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('[Admin] getEventFinancialReport error:', error);
+    return res.status(500).json({ message: error.message || 'Server error generating financial report' });
+  }
+};
