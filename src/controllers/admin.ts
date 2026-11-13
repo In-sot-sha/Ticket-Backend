@@ -2239,6 +2239,73 @@ export const getEventFinancialReport = async (req: AuthRequest, res: Response) =
       vendorNet += Number(v.netAmount) || 0;
     }
 
+    // 5. Ticket tiers breakdown (strictly based on event.ticketTypes)
+    const tierById = new Map<number, { id: number; name: string; price: number; soldCount: number; onlineCount: number; assistedCount: number }>();
+    const tierByName = new Map<string, { id: number; name: string; price: number; soldCount: number; onlineCount: number; assistedCount: number }>();
+
+    for (const tt of event.ticketTypes) {
+      const entry = {
+        id: tt.id,
+        name: tt.name,
+        price: Number(tt.price) || 0,
+        soldCount: 0,
+        onlineCount: 0,
+        assistedCount: 0,
+      };
+      tierById.set(tt.id, entry);
+      tierByName.set(tt.name.trim().toLowerCase(), entry);
+    }
+
+    const defaultTier = event.ticketTypes[0] ? tierById.get(event.ticketTypes[0].id) : null;
+
+    const findTier = (ticket: any) => {
+      const tid = ticket.ticketType?.id || ticket.ticketTypeId;
+      if (tid && tierById.has(tid)) {
+        return tierById.get(tid);
+      }
+      const tName = ticket.ticketType?.name?.trim().toLowerCase();
+      if (tName && tierByName.has(tName)) {
+        return tierByName.get(tName);
+      }
+      return defaultTier;
+    };
+
+    for (const o of orders) {
+      const isOnline = o.purchaseType === 'ONLINE';
+      for (const t of o.tickets) {
+        const item = findTier(t);
+        if (item) {
+          item.soldCount += 1;
+          if (isOnline) {
+            item.onlineCount += 1;
+          } else {
+            item.assistedCount += 1;
+          }
+        }
+      }
+    }
+
+    for (const gt of gateTickets) {
+      const item = findTier(gt);
+      if (item) {
+        item.soldCount += 1;
+        item.assistedCount += 1;
+      }
+    }
+
+    // ONLY return the official ticket tiers defined for the event
+    const tiers = event.ticketTypes.map((tt) => {
+      const entry = tierById.get(tt.id)!;
+      return {
+        id: tt.id,
+        name: tt.name,
+        price: entry.price,
+        soldCount: entry.soldCount,
+        onlineCount: entry.onlineCount,
+        assistedCount: entry.assistedCount,
+      };
+    });
+
     // Consolidated totals
     const totalTicketsSold = onlineTicketsCount + assistedTicketsCount + gateTicketsCount;
     const grossTicketRevenue = onlineGross + assistedGrossCollected + gateGrossCollected;
@@ -2367,6 +2434,7 @@ export const getEventFinancialReport = async (req: AuthRequest, res: Response) =
         endDate: event.endDate,
         status: statusText,
         organization: event.organization,
+        ticketTypes: event.ticketTypes,
       },
       summary: {
         totalTicketsSold,
@@ -2376,6 +2444,7 @@ export const getEventFinancialReport = async (req: AuthRequest, res: Response) =
         netOrganizerProceeds,
         netPayable,
       },
+      tiers,
       reconciliation: {
         grossTicketRevenue,
         gatewayCharges,
